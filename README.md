@@ -41,7 +41,7 @@ beside the configuration in `agent.log`.
 ### Install without linking an account
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/forkco/fork-cli/v0.3.0/install.sh | sh
+curl -fsSL https://github.com/forkco/fork-cli/releases/download/v0.3.0/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 fork help
 ```
@@ -81,7 +81,7 @@ make build
 make release VERSION=0.3.0
 ```
 
-Release tags build four standalone binaries and SHA256SUMS. The installer verifies
+Release tags publish `install.sh`, four standalone binaries and SHA256SUMS. The installer verifies
 the selected binary checksum before installation. No backend configuration,
 secrets or private server source is included in this repository.
 
