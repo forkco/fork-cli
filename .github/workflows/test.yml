@@ -17,6 +17,7 @@ jobs:
       - run: make test
       - run: sh -n install.sh
       - name: Smoke-test published installer on Linux
+        timeout-minutes: 3
         if: github.event_name == 'push'
         shell: bash
         run: |
