@@ -12,5 +12,6 @@ release:
 	@for platform in linux darwin; do for arch in amd64 arm64; do \
 		CGO_ENABLED=0 GOOS=$$platform GOARCH=$$arch go build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o dist/fork-agent-$$platform-$$arch ./cmd/fork || exit 1; \
 	done; done
-	cp install.sh dist/install.sh
+	# Match the installer default to the version of these release binaries.
+	sed 's/^version=.*/version=$${FORK_CLI_VERSION:-$(VERSION)}/' install.sh > dist/install.sh
 	cd dist && shasum -a 256 fork-agent-linux-amd64 fork-agent-linux-arm64 fork-agent-darwin-amd64 fork-agent-darwin-arm64 > SHA256SUMS
