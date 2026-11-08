@@ -16,3 +16,18 @@ jobs:
           cache: true
       - run: make test
       - run: sh -n install.sh
+      - name: Smoke-test published installer on Linux
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_dir=$(mktemp -d)
+          trap 'rm -rf "$task_dir"' EXIT
+          export INSTALL_DIR="$task_dir/bin"
+          export XDG_CONFIG_HOME="$task_dir/config"
+          curl -fsSL --retry 3 --max-time 60 https://github.com/forkco/fork-cli/releases/download/v0.3.0/install.sh -o "$task_dir/install.sh"
+          sh "$task_dir/install.sh"
+          "$INSTALL_DIR/fork" version
+          "$INSTALL_DIR/fork" help
+          "$INSTALL_DIR/fork" uninstall
+          test ! -e "$INSTALL_DIR/fork"
