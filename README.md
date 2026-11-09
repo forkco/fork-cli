@@ -59,3 +59,11 @@ cargo build --release --locked
 The source includes the legacy Go implementation for compatibility reference; current builds use `rust/main.rs`. Release jobs build Linux/macOS amd64/arm64 executables and package the optional computer separately. All public installer assets come from the corresponding GitHub Release.
 
 Version 0.4.4 announces the configured agent on its HTTPS session. Fork shows Host Claude or Host Codex at the top of the model picker and notifies you on connection. The host option uses your official CLI’s configured default model.
+
+
+Version 0.4.5 adds a native model submenu inside Host. Its catalog comes from your
+installed Claude or Codex CLI, without an inference request or provider credentials
+being sent to Fork. Auto uses the native default; an explicit choice is passed as
+`--model`. Run `fork models` to inspect the catalog. Model-specific work waits for
+a supporting connector rather than falling back to a paid Fork model. Ordinary
+dashboard/public chat does not try to download an application workspace.
