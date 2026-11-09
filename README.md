@@ -18,6 +18,7 @@ fork uninstall        Stop, revoke this device and remove this installation
 fork help             Show commands
 fork pull APP_ID      Download all logical app files into the current directory
 fork push             Upload an immutable 24-hour preview, without publication
+fork save             Commit local edits as an app version (checks base revision)
 fork test             Check the pushed preview with the optional Virtual computer
 fork app-create TITLE SLUG
 ```
