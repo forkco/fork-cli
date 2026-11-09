@@ -1,4 +1,5 @@
 mod models;
+mod progress;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::os::unix::{
@@ -58,23 +59,38 @@ fn cfg() -> Result<Config> {
 fn curl_auth(c: &Config) -> Result<PathBuf> {
     let p = dir().join(format!("http-auth-{}.conf", std::process::id()));
     fs::create_dir_all(dir())?;
+    static AUTH_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let temporary = dir().join(format!(
+        "http-auth-{}-{}.tmp",
+        std::process::id(),
+        AUTH_SEQUENCE.fetch_add(1, Ordering::SeqCst)
+    ));
     let mut f = fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
         .mode(0o600)
-        .open(&p)?;
+        .open(&temporary)?;
     writeln!(f, "header = \"Authorization: Bearer {}\"", c.token)?;
+    fs::rename(temporary, &p)?;
     Ok(p)
 }
 fn request(c: &Config, method: &str, url: &str, body: Option<Value>) -> Result<Value> {
+    request_timeout(c, method, url, body, "60")
+}
+fn request_timeout(
+    c: &Config,
+    method: &str,
+    url: &str,
+    body: Option<Value>,
+    timeout: &str,
+) -> Result<Value> {
     let mut cmd = Command::new("curl");
     cmd.args([
         "-fsS",
         "--connect-timeout",
         "15",
         "--max-time",
-        "60",
+        timeout,
         "-X",
         method,
         "-H",
@@ -301,7 +317,13 @@ struct TaskResult {
 fn agent_result(agent: &str, raw: &str, success: bool) -> Result<TaskResult> {
     let mut result = TaskResult::default();
     if agent == "claude" {
-        let v: Value = serde_json::from_str(raw)?;
+        let v: Value = serde_json::from_str(raw).or_else(|_| {
+            raw.lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|v| v["type"] == "result")
+                .last()
+                .ok_or_else(|| serde_json::from_str::<Value>("").unwrap_err())
+        })?;
         if let Some(u) = v["usage"].as_object() {
             let model = v["modelUsage"]
                 .as_object()
@@ -380,11 +402,17 @@ fn agent_result(agent: &str, raw: &str, success: bool) -> Result<TaskResult> {
     Ok(result)
 }
 
-fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<TaskResult> {
+fn run_task(
+    c: &Config,
+    task: &Value,
+    alive: &Arc<AtomicBool>,
+    session: &str,
+) -> Result<TaskResult> {
     let id = task["id"].as_str().ok_or("No task ID")?;
     if !id.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-') {
         return Err("Invalid task ID".into());
     }
+    let reporter = progress::Reporter::start(c, id, session, alive);
     let root = env::temp_dir().join(format!("fork-{}-{id}", std::process::id()));
     fs::create_dir_all(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
@@ -393,6 +421,7 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<TaskRes
         .as_str()
         .filter(|s| !s.is_empty() && *s != "dashboard" && *s != "public");
     if let Some(app) = app {
+        reporter.activity.set("studying_app");
         pull(c, app, &root)?;
     }
     let history = request(c, "GET", &format!("/api/cli/tasks/{id}/context"), None)?;
@@ -406,7 +435,9 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<TaskRes
         cmd.args([
             "--print",
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
             "--permission-mode",
             "acceptEdits",
             "--allowedTools",
@@ -454,7 +485,7 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<TaskRes
     }
     cmd.current_dir(&root)
         .stdin(Stdio::piped())
-        .stdout(result)
+        .stdout(Stdio::piped())
         .stderr(errors);
     unsafe {
         cmd.pre_exec(|| {
@@ -463,6 +494,23 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<TaskRes
         });
     }
     let mut child = cmd.spawn()?;
+    let stdout = child.stdout.take().ok_or("Missing agent output")?;
+    let activity = reporter.activity.clone();
+    let agent = c.agent.clone();
+    let reader = std::thread::spawn(move || -> io::Result<()> {
+        let mut file = result;
+        for line in io::BufReader::new(stdout).lines() {
+            let line = line?;
+            writeln!(file, "{line}")?;
+            if line.len() <= 256 * 1024 {
+                if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                    activity.native(&agent, &event);
+                }
+            }
+        }
+        Ok(())
+    });
+    reporter.activity.set("thinking");
     child.stdin.take().unwrap().write_all(prompt.as_bytes())?;
     let started = std::time::Instant::now();
     let success = loop {
@@ -481,10 +529,12 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<TaskRes
                 libc::kill(-(child.id() as i32), libc::SIGKILL);
             }
             child.wait()?;
+            let _ = reader.join();
             return Err("Agent interrupted; task will be requeued".into());
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    reader.join().map_err(|_| "Agent output reader failed")??;
     let raw = fs::read_to_string(root.join(".fork/result.json"))?;
     let mut result = agent_result(&c.agent, &raw, success)?;
     if root.join(".fork/workspace.json").exists() {
@@ -569,6 +619,7 @@ fn run(c: &Config) -> Result<()> {
         let stream_models = native_models.clone();
         std::thread::spawn(move || {
             let mut event = String::new();
+            let mut session = String::new();
             for line in io::BufReader::new(reader).lines() {
                 let Ok(line) = line else { break };
                 if let Some(v) = line.strip_prefix("event: ") {
@@ -576,6 +627,7 @@ fn run(c: &Config) -> Result<()> {
                 } else if let Some(v) = line.strip_prefix("data: ") {
                     if event == "ready" {
                         if let Ok(ready) = serde_json::from_str::<Value>(v) {
+                            session = ready["session_id"].as_str().unwrap_or("").to_string();
                             if let Some(id) = ready["session_id"]
                                 .as_str()
                                 .filter(|id| id.chars().all(|b| b.is_ascii_hexdigit() || b == '-'))
@@ -593,7 +645,7 @@ fn run(c: &Config) -> Result<()> {
                     }
                     if event == "task" {
                         if let Ok(task) = serde_json::from_str::<Value>(v) {
-                            if tx.send(task).is_err() {
+                            if tx.send((task, session.clone())).is_err() {
                                 break;
                             }
                         }
@@ -604,7 +656,7 @@ fn run(c: &Config) -> Result<()> {
         });
         while RUN.load(Ordering::SeqCst) && alive.load(Ordering::SeqCst) {
             match rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(task) => {
+                Ok((task, session)) => {
                     let id = task["id"].as_str().unwrap_or("");
                     let receipt = dir().join("results").join(format!("{id}.json"));
                     let saved = fs::read(&receipt)
@@ -619,7 +671,7 @@ fn run(c: &Config) -> Result<()> {
                             usage: saved.get("usage").filter(|v| !v.is_null()).cloned(),
                         }
                     } else {
-                        match run_task(c, &task, &alive) {
+                        match run_task(c, &task, &alive, &session) {
                             Ok(s) => s,
                             Err(e) => {
                                 if !alive.load(Ordering::SeqCst) || !RUN.load(Ordering::SeqCst) {
@@ -1134,6 +1186,15 @@ mod tests {
             .unwrap()
             .usage
             .is_none());
+    }
+    #[test]
+    fn claude_stream_result_preserves_summary_and_usage() {
+        let raw=concat!("{\"type\":\"system\",\"subtype\":\"init\"}\n",
+            "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"content_block\":{\"type\":\"thinking\"}}}\n",
+            "{\"type\":\"result\",\"result\":\"done\",\"usage\":{\"input_tokens\":12,\"output_tokens\":4},\"modelUsage\":{\"native-model\":{}}}\n");
+        let result = agent_result("claude", raw, true).unwrap();
+        assert_eq!(result.summary, "done");
+        assert_eq!(result.usage.unwrap()["model"], "native-model");
     }
     #[test]
     fn codex_usage_keeps_cached_input_as_subset() {

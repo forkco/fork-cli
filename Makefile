@@ -1,4 +1,4 @@
-VERSION ?= 0.4.5
+VERSION ?= 0.4.6
 .PHONY: build test release
 build:
 	cargo build --release --locked
