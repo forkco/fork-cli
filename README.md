@@ -39,6 +39,16 @@ The core task listener remains in the background; the Virtual computer does not 
 
 Set `FORK_CHROME` to reuse a compatible installed browser. `FORK_CONFIG_DIR` isolates an installation for testing or another account. Config and device credentials are private; provider sign-in remains owned by the official agent CLI. Temporary app workspaces remain under the system temp directory for inspection and can be removed after use.
 
+## Environments and usage history
+
+Production install commands use the default `fork.me`; staging commands add
+`--host fork.cx`. In v0.4.2 the connector includes provider input, output and cache
+counters in its durable completion receipts. Fork lists these separately as your
+server's usage, with zero Fork Tokens charged. Receipt retries do not count them
+again. Provider tokens are not converted into Fork Tokens and do not enter Fork's
+cost statistics. Claude cache counts are additional to its uncached input; Codex
+cached input is a subset of its total input. Missing counters remain unknown.
+
 ## Build
 
 ```sh

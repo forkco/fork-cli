@@ -251,7 +251,96 @@ fn browser(root: &Path, url: &str) -> Result<String> {
     }
     Ok(String::from_utf8(out.stdout)?)
 }
-fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<String> {
+#[derive(Default)]
+struct TaskResult {
+    summary: String,
+    usage: Option<Value>,
+}
+
+// Provider-native counters only. These are never Fork rune charges or costs.
+fn agent_result(agent: &str, raw: &str, success: bool) -> Result<TaskResult> {
+    let mut result = TaskResult::default();
+    if agent == "claude" {
+        let v: Value = serde_json::from_str(raw)?;
+        if let Some(u) = v["usage"].as_object() {
+            let model = v["modelUsage"]
+                .as_object()
+                .map(|m| m.keys().cloned().collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            result.usage = Some(
+                json!({"provider":"claude","model":model.chars().take(160).collect::<String>(),
+                "input_tokens":u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
+                "output_tokens":u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+                "cache_read_input_tokens":u.get("cache_read_input_tokens").and_then(Value::as_u64).unwrap_or(0),
+                "cache_creation_input_tokens":u.get("cache_creation_input_tokens").and_then(Value::as_u64).unwrap_or(0)}),
+            );
+        }
+        result.summary = v["result"].as_str().unwrap_or("").to_string();
+        if !success
+            || v["is_error"].as_bool() == Some(true)
+            || v["permission_denials"]
+                .as_array()
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+        {
+            result.summary = format!(
+                "Fork agent could not finish: Claude reported an error.\n{}",
+                result.summary
+            );
+        }
+    } else {
+        let events: Vec<Value> = raw
+            .lines()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .collect();
+        let mut input = 0u64;
+        let mut output = 0u64;
+        let mut cached = 0u64;
+        let mut reported = false;
+        for e in &events {
+            if e["type"] == "turn.completed" {
+                if let Some(u) = e["usage"].as_object() {
+                    reported = true;
+                    input = input
+                        .saturating_add(u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0));
+                    output = output.saturating_add(
+                        u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+                    );
+                    cached = cached.saturating_add(
+                        u.get("cached_input_tokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    );
+                }
+            }
+        }
+        if reported {
+            result.usage = Some(
+                json!({"provider":"codex","input_tokens":input,"output_tokens":output,"cache_read_input_tokens":cached,"cache_creation_input_tokens":0}),
+            );
+        }
+        result.summary = events
+            .iter()
+            .filter(|v| v["item"]["type"] == "agent_message")
+            .last()
+            .and_then(|v| v["item"]["text"].as_str().map(String::from))
+            .unwrap_or_default();
+        if !success
+            || !events.iter().any(|v| v["type"] == "turn.completed")
+            || events
+                .iter()
+                .any(|v| v["type"] == "turn.failed" || v["type"] == "error")
+        {
+            result.summary = format!(
+                "Fork agent could not finish: Codex did not complete the turn.\n{}",
+                result.summary
+            );
+        }
+    }
+    Ok(result)
+}
+
+fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<TaskResult> {
     let id = task["id"].as_str().ok_or("No task ID")?;
     if !id.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-') {
         return Err("Invalid task ID".into());
@@ -331,12 +420,9 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<String>
     let mut child = cmd.spawn()?;
     child.stdin.take().unwrap().write_all(prompt.as_bytes())?;
     let started = std::time::Instant::now();
-    loop {
+    let success = loop {
         if let Some(status) = child.try_wait()? {
-            if !status.success() {
-                return Err(format!("Agent failed; see {}", root.display()).into());
-            }
-            break;
+            break status.success();
         }
         if !RUN.load(Ordering::SeqCst)
             || !alive.load(Ordering::SeqCst)
@@ -353,43 +439,18 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<String>
             return Err("Agent interrupted; task will be requeued".into());
         }
         std::thread::sleep(Duration::from_millis(100));
-    }
-    let raw = fs::read_to_string(root.join(".fork/result.json"))?;
-    let mut summary = if c.agent == "claude" {
-        let v: Value = serde_json::from_str(&raw)?;
-        if v["is_error"].as_bool() == Some(true)
-            || v["permission_denials"]
-                .as_array()
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
-        {
-            return Err("Claude returned an error".into());
-        }
-        v["result"].as_str().unwrap_or("").to_string()
-    } else {
-        let events: Vec<Value> = raw
-            .lines()
-            .filter_map(|s| serde_json::from_str(s).ok())
-            .collect();
-        if !events.iter().any(|v| v["type"] == "turn.completed")
-            || events
-                .iter()
-                .any(|v| v["type"] == "turn.failed" || v["type"] == "error")
-        {
-            return Err("Codex did not complete the turn".into());
-        }
-        events
-            .iter()
-            .filter(|v| v["item"]["type"] == "agent_message")
-            .last()
-            .and_then(|v| v["item"]["text"].as_str().map(String::from))
-            .unwrap_or_default()
     };
+    let raw = fs::read_to_string(root.join(".fork/result.json"))?;
+    let mut result = agent_result(&c.agent, &raw, success)?;
     if root.join(".fork/workspace.json").exists() {
-        let url = push(c, &root)?;
-        summary.push_str(&format!("\n\nPreview: {url}"));
+        match push(c, &root) {
+            Ok(url) => result.summary.push_str(&format!("\n\nPreview: {url}")),
+            Err(e) => result
+                .summary
+                .push_str(&format!("\n\nPreview upload failed: {e}")),
+        }
     }
-    Ok(summary)
+    Ok(result)
 }
 fn run(c: &Config) -> Result<()> {
     let args = if c.agent == "claude" {
@@ -484,11 +545,14 @@ fn run(c: &Config) -> Result<()> {
                     let saved = fs::read(&receipt)
                         .ok()
                         .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-                    let summary = if let Some(saved) = saved {
+                    let result = if let Some(saved) = saved {
                         if saved["task"] != task {
                             return Err("Redelivered task differs".into());
                         }
-                        saved["summary"].as_str().unwrap_or("").to_string()
+                        TaskResult {
+                            summary: saved["summary"].as_str().unwrap_or("").to_string(),
+                            usage: saved.get("usage").filter(|v| !v.is_null()).cloned(),
+                        }
                     } else {
                         match run_task(c, &task, &alive) {
                             Ok(s) => s,
@@ -496,20 +560,26 @@ fn run(c: &Config) -> Result<()> {
                                 if !alive.load(Ordering::SeqCst) || !RUN.load(Ordering::SeqCst) {
                                     break;
                                 }
-                                format!("Fork agent could not finish: {e}")
+                                TaskResult {
+                                    summary: format!("Fork agent could not finish: {e}"),
+                                    usage: None,
+                                }
                             }
                         }
                     };
-                    let mut summary = summary;
+                    let mut summary = result.summary;
                     while summary.len() > 65535 {
                         summary.pop();
                     }
-                    save(&receipt, &json!({"task":task,"summary":summary}))?;
+                    save(
+                        &receipt,
+                        &json!({"task":task,"summary":summary,"usage":result.usage}),
+                    )?;
                     if let Err(e) = request(
                         c,
                         "POST",
                         &format!("/api/cli/tasks/{id}/complete"),
-                        Some(json!({"summary":summary})),
+                        Some(json!({"summary":summary,"usage":result.usage})),
                     ) {
                         eprintln!("Completion pending retry: {e}");
                         break;
@@ -955,6 +1025,39 @@ fn ensure_agent(c: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claude_usage_preserves_cache_and_error_counters() {
+        let raw = r#"{"result":"hello","is_error":false,"usage":{"input_tokens":12,"output_tokens":8,"cache_read_input_tokens":200,"cache_creation_input_tokens":30},"modelUsage":{"claude-sonnet-test":{}}}"#;
+        let r = agent_result("claude", raw, true).unwrap();
+        assert_eq!(r.summary, "hello");
+        let u = r.usage.unwrap();
+        assert_eq!(u["input_tokens"], 12);
+        assert_eq!(u["cache_read_input_tokens"], 200);
+        assert_eq!(u["cache_creation_input_tokens"], 30);
+        assert_eq!(u["model"], "claude-sonnet-test");
+        let r = agent_result("claude", raw, false).unwrap();
+        assert!(r.summary.contains("could not finish"));
+        assert_eq!(r.usage.unwrap()["output_tokens"], 8);
+        assert!(agent_result("claude", r#"{"result":"old"}"#, true)
+            .unwrap()
+            .usage
+            .is_none());
+    }
+    #[test]
+    fn codex_usage_keeps_cached_input_as_subset() {
+        let raw=concat!("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"done\"}}\n",
+          "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1200,\"cached_input_tokens\":800,\"output_tokens\":40}}\n",
+          "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":100,\"cached_input_tokens\":20,\"output_tokens\":10}}");
+        let r = agent_result("codex", raw, true).unwrap();
+        assert_eq!(r.summary, "done");
+        let u = r.usage.unwrap();
+        assert_eq!(u["input_tokens"], 1300);
+        assert_eq!(u["cache_read_input_tokens"], 820);
+        assert_eq!(u["output_tokens"], 50);
+        assert_eq!(u["provider"], "codex");
+        let old = agent_result("codex", r#"{"type":"turn.completed"}"#, true).unwrap();
+        assert!(old.usage.is_none());
+    }
     #[test]
     fn local_paths_cannot_escape_workspace() {
         for p in [
