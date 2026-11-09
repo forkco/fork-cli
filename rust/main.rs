@@ -296,6 +296,9 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<String>
         ]);
     }
     if c.agent == "codex" {
+        // Fork commands write private transport/config metadata outside the app.
+        cmd.arg("--add-dir").arg(dir());
+        cmd.args(["-c", &codex_shell_environment()?]);
         cmd.args([
             "-c",
             "approval_policy=\"never\"",
@@ -303,8 +306,7 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<String>
             "sandbox_workspace_write.network_access=true",
         ]);
         if c.virtual_computer {
-            let exe = serde_json::to_string(&env::current_exe()?.to_string_lossy())?;
-            cmd.args(["-c",&format!("mcp_servers={{virtual_computer={{command={exe},args=[\"virtual-computer\"],required=true,enabled_tools=[\"computer\"],tools={{computer={{approval_mode=\"approve\"}}}}}}}}")]);
+            cmd.args(["-c", &codex_mcp_config()?]);
         }
     }
     if c.virtual_computer && c.agent == "claude" {
@@ -567,6 +569,8 @@ fn interactive(c: &Config) -> Result<()> {
             cmd.args(["--strict-mcp-config", "--mcp-config", &virtual_mcp()?]);
         }
     } else {
+        cmd.arg("--add-dir").arg(dir());
+        cmd.args(["-c", &codex_shell_environment()?]);
         cmd.args([
             "-c",
             &format!(
@@ -575,8 +579,7 @@ fn interactive(c: &Config) -> Result<()> {
             ),
         ]);
         if c.virtual_computer {
-            let exe = serde_json::to_string(&exe.to_string_lossy())?;
-            cmd.args(["-c", &format!("mcp_servers={{virtual_computer={{command={exe},args=[\"virtual-computer\"],required=true}}}}")]);
+            cmd.args(["-c", &codex_mcp_config()?]);
         }
     }
     Err(cmd.current_dir(env::current_dir()?).exec().into())
@@ -733,8 +736,27 @@ fn installed(a: &[String]) -> Result<()> {
 fn virtual_mcp() -> Result<String> {
     let exe = env::current_exe()?;
     Ok(serde_json::to_string(
-        &json!({"mcpServers":{"virtual_computer":{"command":exe,"args":["virtual-computer"]}}}),
+        &json!({"mcpServers":{"virtual_computer":{"command":exe,"args":["virtual-computer"],"env":{"FORK_CONFIG_DIR":dir(),"FORK_CHROME":env::var("FORK_CHROME").unwrap_or_default()}}}}),
     )?)
+}
+
+fn codex_environment() -> Result<String> {
+    Ok(format!(
+        "{{FORK_CONFIG_DIR={},FORK_CHROME={}}}",
+        serde_json::to_string(&dir().to_string_lossy())?,
+        serde_json::to_string(&env::var("FORK_CHROME").unwrap_or_default())?
+    ))
+}
+fn codex_shell_environment() -> Result<String> {
+    Ok(format!(
+        "shell_environment_policy.set={}",
+        codex_environment()?
+    ))
+}
+fn codex_mcp_config() -> Result<String> {
+    let exe = serde_json::to_string(&env::current_exe()?.to_string_lossy())?;
+    let environment = codex_environment()?;
+    Ok(format!("mcp_servers={{virtual_computer={{command={exe},args=[\"virtual-computer\"],env={environment},required=true,enabled_tools=[\"computer\"],tools={{computer={{approval_mode=\"approve\"}}}}}}}}"))
 }
 
 fn public_download(url: &str, path: &Path) -> Result<()> {
