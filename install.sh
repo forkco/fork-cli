@@ -26,8 +26,8 @@ command -v curl >/dev/null 2>&1 || { echo 'Install curl first.' >&2; exit 1; }
 artifact="fork-agent-$platform-$arch"
 temp=$(mktemp -d)
 trap 'rm -rf "$temp"' EXIT HUP INT TERM
-curl -fsSL "$base/$artifact" -o "$temp/$artifact"
-curl -fsSL "$base/SHA256SUMS" -o "$temp/SHA256SUMS"
+curl -fsSL --retry 2 --connect-timeout 15 --max-time 300 "$base/$artifact" -o "$temp/$artifact"
+curl -fsSL --retry 2 --connect-timeout 15 --max-time 300 "$base/SHA256SUMS" -o "$temp/SHA256SUMS"
 expected=$(awk -v file="$artifact" '$2==file {print $1}' "$temp/SHA256SUMS")
 case "$expected" in *[!0-9a-f]*|'') echo 'Invalid release checksum.' >&2; exit 1 ;; esac
 [ "${#expected}" -eq 64 ] || { echo 'Invalid release checksum.' >&2; exit 1; }
@@ -60,7 +60,7 @@ ln -sf fork "$target/fork-agent"
 export PATH="$target:$HOME/.local/bin:$PATH"
 echo "Installed $target/fork"
 if [ "$virtual_computer" = true ]; then
-    curl -fsSL "$base/virtual-computer.tar.gz" -o "$temp/virtual-computer.tar.gz"
+    curl -fsSL --retry 2 --connect-timeout 15 --max-time 300 "$base/virtual-computer.tar.gz" -o "$temp/virtual-computer.tar.gz"
     expected=$(awk '$2=="virtual-computer.tar.gz" {print $1}' "$temp/SHA256SUMS")
     if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$temp/virtual-computer.tar.gz" | awk '{print $1}'); else actual=$(shasum -a 256 "$temp/virtual-computer.tar.gz" | awk '{print $1}'); fi
     [ -n "$expected" ] && [ "$expected" = "$actual" ] || { echo 'Virtual computer checksum mismatch.' >&2; exit 1; }
@@ -71,12 +71,12 @@ fi
 if [ -n "$setup_token" ]; then
     if [ "$agent" = claude ] && ! command -v claude >/dev/null 2>&1; then
         echo 'Installing official Claude Code…'
-        curl -fsSL https://claude.ai/install.sh -o "$temp/claude-install.sh"
+        curl -fsSL --retry 2 --connect-timeout 15 --max-time 300 https://claude.ai/install.sh -o "$temp/claude-install.sh"
         bash "$temp/claude-install.sh"
     fi
     if [ "$agent" = codex ] && ! command -v codex >/dev/null 2>&1; then
         echo 'Installing official Codex CLI…'
-        curl -fsSL https://chatgpt.com/codex/install.sh -o "$temp/codex-install.sh"
+        curl -fsSL --retry 2 --connect-timeout 15 --max-time 300 https://chatgpt.com/codex/install.sh -o "$temp/codex-install.sh"
         sh "$temp/codex-install.sh"
     fi
     printf '%s\n' "$setup_token" | "$target/fork" setup --host "$host" --agent "$agent" --virtual-computer "$virtual_computer" --token-stdin
