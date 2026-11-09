@@ -471,6 +471,11 @@ fn run_task(
     } else {
         prompt
     };
+    let prompt = if task["payload"]["execution_kind"] == "build" {
+        format!("APP BUILD HAS BEEN CONFIRMED: the user clicked Create app on the proposal. Build the approved app now in this active app workspace. Earlier instructions to wait before coding have been satisfied. Prefer Read/Edit/Write or apply_patch for app files; shell commands still need web approval. The connector uploads your completed app preview automatically.\n\n{prompt}")
+    } else {
+        prompt
+    };
     fs::write(root.join("FORK_TASK.md"), &prompt)?;
     let result = fs::File::create(root.join(".fork/result.json"))?;
     let errors = fs::File::create(root.join(".fork/errors.log"))?;

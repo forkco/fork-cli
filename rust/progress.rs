@@ -219,7 +219,15 @@ pub fn activity_kind(agent: &str, v: &Value) -> Option<&'static str> {
                 Some("file_change") => Some("editing_files"),
                 Some("web_search") => Some("searching_web"),
                 Some("mcp_tool_call") => {
-                    Some(tool_kind(v["item"]["server"].as_str().unwrap_or("")))
+                    if v["item"]["server"] == "fork" && v["item"]["tool"] == "run_command" {
+                        let args = &v["item"]["arguments"];
+                        let parsed = args
+                            .as_str()
+                            .and_then(|s| serde_json::from_str::<Value>(s).ok());
+                        shell_activity(&parsed.as_ref().unwrap_or(args)["command"])
+                    } else {
+                        Some(tool_kind(v["item"]["server"].as_str().unwrap_or("")))
+                    }
                 }
                 _ => None,
             };
