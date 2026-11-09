@@ -82,5 +82,5 @@ if [ -n "$setup_token" ]; then
     printf '%s\n' "$setup_token" | "$target/fork" setup --host "$host" --agent "$agent" --virtual-computer "$virtual_computer" --token-stdin
     unset setup_token
 else
-    echo "Connect using the install command in Fork → Subscription, or: $target/fork login --host $host --agent $agent"
+    echo "Connect using your personal install command in Fork → Subscription."
 fi

@@ -59,7 +59,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           sed "s/^version=.*/version=\${FORK_CLI_VERSION:-${RELEASE_TAG#v}}/" install.sh > dist/install.sh
-          tar -czf dist/virtual-computer.tar.gz virtual-computer/src virtual-computer/package.json virtual-computer/package-lock.json virtual-computer/README.md
+          tar -czf dist/virtual-computer.tar.gz virtual-computer/src virtual-computer/deploy virtual-computer/package.json virtual-computer/package-lock.json virtual-computer/README.md
           cd dist
           sha256sum fork-agent-* virtual-computer.tar.gz > SHA256SUMS
       - name: Publish release

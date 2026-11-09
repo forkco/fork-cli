@@ -173,9 +173,13 @@ export class Sessions {
     if (s.closed) throw new Error('Session closed');
     s.dir = await mkdtemp(join(this.config.workRoot || tmpdir(), 'fork-computer-'));
     if (s.closed) { await rm(s.dir, {recursive: true, force: true}); throw new Error('Session closed'); }
+    // Chromium's SingletonSocket lives under TMPDIR and must fit the Unix
+    // socket path limit, even when the app workspace has a long absolute path.
+    s.browserTmp = await mkdtemp(join(process.platform === 'win32' ? tmpdir() : '/tmp', 'fc-'));
+    if (s.closed) { await rm(s.browserTmp, {recursive:true,force:true}); throw new Error('Session closed'); }
     s.server = await chromium.launchServer({
       executablePath: this.config.browserExecutable || undefined,headless: true, chromiumSandbox: true, host: '127.0.0.1', timeout: this.config.timeout,
-      env: {PATH: process.env.PATH, HOME: s.dir, TMPDIR: s.dir, LANG: 'C.UTF-8', ...(process.env.LD_LIBRARY_PATH ? {LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH} : {})},
+      env: {PATH: process.env.PATH, HOME: s.dir, TMPDIR: s.browserTmp, LANG: 'C.UTF-8', ...(process.env.LD_LIBRARY_PATH ? {LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH} : {})},
       proxy: {server: this.proxyURL, bypass: '<-loopback>'},
       ignoreDefaultArgs: ['--enable-automation'],
       args: ['--disable-blink-features=AutomationControlled', '--disable-quic', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'],
@@ -435,6 +439,7 @@ export class Sessions {
       await s.server?.kill().catch(() => {});
       await s.workPending?.catch(() => {});
       if (s.dir) await rm(s.dir, {recursive: true, force: true}).catch(() => {});
+      if (s.browserTmp) await rm(s.browserTmp, {recursive: true, force: true}).catch(() => {});
       if (failure) throw failure;
     })();
     return s.destroying;
