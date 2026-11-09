@@ -37,7 +37,7 @@ The optional package uses Fork computer's existing browser/workspace engine. Its
 
 The core task listener remains in the background; the Virtual computer does not run continuously. A plain chat does not start Chromium. A build can open its pushed preview, interact with it and verify the result. `fork test` is a one-request browser check that closes its computer when finished.
 
-Set `FORK_CHROME` to reuse a compatible installed browser. `FORK_CONFIG_DIR` isolates an installation for testing or another account. Config and device credentials are private; provider sign-in remains owned by the official agent CLI. Temporary app workspaces remain under the system temp directory for inspection and can be removed after use.
+Set `FORK_CHROME` to reuse a compatible installed browser. The installer remembers that executable for later starts from a fresh shell; an empty MCP environment value does not erase it. `FORK_CONFIG_DIR` isolates an installation for testing or another account. Config and device credentials are private; provider sign-in remains owned by the official agent CLI. Temporary app workspaces remain under the system temp directory for inspection and can be removed after use.
 
 ## Environments and usage history
 

@@ -221,6 +221,50 @@ fn save_app(c: &Config, root: &Path) -> Result<Value> {
     Ok(result)
 }
 
+fn selected_browser(runtime: &Value, override_path: Option<String>) -> String {
+    override_path
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            runtime["chrome"]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(String::from)
+        })
+        .unwrap_or_default()
+}
+
+fn virtual_command(runtime: &Value, entry: &Path) -> Result<Command> {
+    let mut cmd = Command::new(runtime["node"].as_str().ok_or("Missing Node runtime")?);
+    cmd.arg(entry).env(
+        "PLAYWRIGHT_BROWSERS_PATH",
+        runtime["browsers"].as_str().unwrap_or(""),
+    );
+    let chrome = selected_browser(runtime, env::var("FORK_CHROME").ok());
+    if chrome.is_empty() {
+        cmd.env_remove("FORK_CHROME");
+    } else {
+        cmd.env("FORK_CHROME", chrome);
+    }
+    Ok(cmd)
+}
+
+fn run_virtual() -> Result<()> {
+    if !cfg()?.virtual_computer {
+        return Err("Virtual computer is disabled".into());
+    }
+    let runtime: Value =
+        serde_json::from_slice(&fs::read(dir().join("virtual-computer/runtime.json"))?)?;
+    let entry = Path::new(
+        runtime["entry"]
+            .as_str()
+            .ok_or("Missing virtual computer package")?,
+    );
+    let err = virtual_command(&runtime, entry)?
+        .env("FORK_WORKSPACE", env::current_dir()?)
+        .exec();
+    Err(err.into())
+}
+
 fn browser(root: &Path, url: &str) -> Result<String> {
     let runtime: Value =
         serde_json::from_slice(&fs::read(dir().join("virtual-computer/runtime.json"))?)?;
@@ -230,12 +274,7 @@ fn browser(root: &Path, url: &str) -> Result<String> {
             .ok_or("Missing virtual computer runtime")?,
     )
     .with_file_name("browser-check.js");
-    let mut child = Command::new(runtime["node"].as_str().ok_or("Missing Node runtime")?)
-        .arg(entry)
-        .env(
-            "PLAYWRIGHT_BROWSERS_PATH",
-            runtime["browsers"].as_str().unwrap_or(""),
-        )
+    let mut child = virtual_command(&runtime, &entry)?
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -606,7 +645,11 @@ fn main() {
 }
 fn cli() -> Result<()> {
     let a: Vec<String> = env::args().skip(1).collect();
-    let command = a.first().map(String::as_str).unwrap_or("chat");
+    let command = if a.iter().any(|v| v == "--help" || v == "-h") {
+        "help"
+    } else {
+        a.first().map(String::as_str).unwrap_or("chat")
+    };
     match command{
  "version"=>println!("fork {}",env!("CARGO_PKG_VERSION")),
  "help"=>println!("fork — local Claude/Codex connected to Fork over HTTPS\n\nfork start | stop | uninstall | help\nfork pull APP_ID — download the complete app into this directory\nfork push — upload an immutable preview\nfork save — save changes as an app version\nfork test — test the preview with your Virtual computer\nfork app-create TITLE SLUG — create an app\nfork — interactive agent in the current workspace"),
@@ -618,7 +661,7 @@ fn cli() -> Result<()> {
 
  "config-dir"=>println!("{}",dir().display()),
  "virtual-install"=>install_virtual(Path::new(a.get(1).ok_or("Missing package directory")?))?,
- "virtual-computer"=>{let c=cfg()?;if !c.virtual_computer{return Err("Virtual computer is disabled".into())}let runtime:Value=serde_json::from_slice(&fs::read(dir().join("virtual-computer/runtime.json"))?)?;let err=Command::new(runtime["node"].as_str().ok_or("Missing Node runtime")?).arg(runtime["entry"].as_str().ok_or("Missing virtual computer package")?).env("FORK_WORKSPACE",env::current_dir()?).env("PLAYWRIGHT_BROWSERS_PATH",runtime["browsers"].as_str().unwrap_or("")).exec();return Err(err.into())},
+ "virtual-computer"=>run_virtual()?, 
  "pull"=>{let root=env::current_dir()?;pull(&cfg()?,a.get(1).ok_or("fork pull APP_ID")?,&root)?;println!("App downloaded into {}",root.display());},
  "push"=>println!("{}",push(&cfg()?,&env::current_dir()?)?),
  "save"=>println!("{}",save_app(&cfg()?,&env::current_dir()?)?),
@@ -965,7 +1008,15 @@ fn install_virtual(package: &Path) -> Result<()> {
         return Err("Virtual computer dependencies failed to install".into());
     }
     let browsers = package.join("browsers");
-    if env::var("FORK_CHROME").is_err()
+    let chrome = env::var("FORK_CHROME")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    if let Some(path) = &chrome {
+        if !Path::new(path).is_file() {
+            return Err("FORK_CHROME does not point to a browser executable".into());
+        }
+    }
+    if chrome.is_none()
         && !Command::new(&node)
             .arg(package.join("node_modules/playwright/cli.js"))
             .args(["install", "chromium"])
@@ -979,7 +1030,7 @@ fn install_virtual(package: &Path) -> Result<()> {
     }
     save(
         &package.join("runtime.json"),
-        &json!({"node":node,"entry":package.join("src/stdio.js"),"browsers":browsers}),
+        &json!({"node":node,"entry":package.join("src/stdio.js"),"browsers":browsers,"chrome":chrome}),
     )?;
     println!("Virtual computer installed. It starts only for agent requests.");
     Ok(())
@@ -1025,6 +1076,20 @@ fn ensure_agent(c: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn browser_selection_survives_fresh_shell_and_filtered_mcp_environment() {
+        let runtime = json!({"chrome":"/usr/bin/chromium"});
+        assert_eq!(selected_browser(&runtime, None), "/usr/bin/chromium");
+        assert_eq!(
+            selected_browser(&runtime, Some(String::new())),
+            "/usr/bin/chromium"
+        );
+        assert_eq!(
+            selected_browser(&runtime, Some("/other/chrome".into())),
+            "/other/chrome"
+        );
+        assert_eq!(selected_browser(&json!({}), None), "");
+    }
     #[test]
     fn claude_usage_preserves_cache_and_error_counters() {
         let raw = r#"{"result":"hello","is_error":false,"usage":{"input_tokens":12,"output_tokens":8,"cache_read_input_tokens":200,"cache_creation_input_tokens":30},"modelUsage":{"claude-sonnet-test":{}}}"#;
