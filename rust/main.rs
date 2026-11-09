@@ -549,7 +549,7 @@ fn run(c: &Config) -> Result<()> {
                 "1",
                 "--config",
                 curl_auth(c)?.to_str().ok_or("Invalid config path")?,
-                &format!("{}/api/cli/events", c.origin),
+                &format!("{}/api/cli/events?agent={}", c.origin, c.agent),
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
