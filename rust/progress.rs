@@ -239,6 +239,16 @@ pub fn activity_kind(agent: &str, v: &Value) -> Option<&'static str> {
 mod tests {
     use super::*;
     #[test]
+    fn gated_mcp_web_requests_keep_search_activity() {
+        let args = json!({"command":"curl -fsSL https://example.com/search"});
+        let claude = json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__fork__run_command","input":args}]}});
+        assert_eq!(activity_kind("claude", &claude), Some("searching_web"));
+        for arguments in [args.clone(), json!(args.to_string())] {
+            let codex = json!({"type":"item.started","item":{"type":"mcp_tool_call","server":"fork","tool":"run_command","arguments":arguments}});
+            assert_eq!(activity_kind("codex", &codex), Some("searching_web"));
+        }
+    }
+    #[test]
     fn web_reads_have_search_activity_without_mislabeling_local_work() {
         for cmd in [
             "curl -fsSL https://www.google.com/search?q=TON",
