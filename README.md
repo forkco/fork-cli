@@ -67,3 +67,22 @@ being sent to Fork. Auto uses the native default; an explicit choice is passed a
 `--model`. Run `fork models` to inspect the catalog. Model-specific work waits for
 a supporting connector rather than falling back to a paid Fork model. Ordinary
 dashboard/public chat does not try to download an application workspace.
+
+### Updates
+
+Run `fork update` to install the latest stable release. Downloads come from this
+public repository and are checked against its `SHA256SUMS` and embedded version
+before replacing the binary. `fork update --force` reinstalls the current release.
+Settings, device credentials and the optional Virtual computer are preserved.
+An active task finishes before replacement; the background runner restarts when
+it was running. If the new runner fails to start, the previous binary is restored.
+
+Fork also offers an update in the web interface when a newer release is available.
+Click **Update** to approve that specific version for that device. The approval
+expires after 24 hours. No update is installed without this approval or a local
+`fork update` command. Initial versions older than v0.4.7 need a one-time installer
+upgrade before web-approved updates are supported.
+
+Chat icons are selected by your own agent in the same response. The connector
+strips the transport metadata before publishing the answer and preserves existing
+icons. The prompt is in [`rust/chat-metadata-prompt.md`](rust/chat-metadata-prompt.md).
