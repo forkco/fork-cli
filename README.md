@@ -1,89 +1,48 @@
 # Fork CLI
 
-Connect your own **Claude Code or Codex** on a server to [Fork](https://fork.me).
-Fork generation is **Free** with your own agent: no Fork subscription or Fork
-Tokens are needed for these tasks. Your provider account and its limits still apply.
+A compact Rust connector for your own Claude Code or Codex. One executable, HTTPS task events, local app workspaces and optional **Virtual computer**.
 
-## Install and connect
+Version 0.4 uses the new HTTPS endpoints. Deploy the matching Fork backend before enabling it; the 0.3 SSH connector is retained in Git history.
 
-In **Fork → Subscription**, choose the **Free · Your Claude or Codex** option below
-the paid plans, select your agent, and click **Get install command**. Paste the
-single line into your server terminal. It includes your own one-time Fork setup
-token and the correct Fork host. The command downloads this repository's installer
-and a checksummed binary from [GitHub Releases](https://github.com/forkco/fork-cli/releases).
+## Install
 
-The installer supports **Linux and macOS, amd64 and arm64**, installs the official
-selected provider CLI if missing, opens its own sign-in flow when needed, and
-starts the Fork connector in the background. Run as a normal user; the connector
-requires no root account, Node.js, Go installation or inbound port.
+In **Fork → Subscription → Your Claude or Codex**, select your agent and optionally **Virtual computer**, then copy your personalized one-line command. Its enrollment capability expires in 15 minutes and creates a separate revocable HTTP device key. Existing devices and API keys are untouched.
+
+The installer downloads a checksummed executable from GitHub Releases. When Virtual computer is selected, it also downloads the optional package, reuses Node 24+ or installs a private Node runtime, installs pinned dependencies, and downloads Chromium if no configured browser is available. Node and Chromium are not part of the small core executable. Linux needs Chromium's OS dependencies and a working sandbox; use an unprivileged account. The installer does not request root privileges or disable browser sandboxing.
 
 ```text
-fork             Open Claude Code or Codex in your terminal with Fork tools
-fork start       Start the background connector (safe to repeat)
-fork stop        Stop; incoming tasks stay queued for your server
-fork uninstall   Stop, revoke this device, remove Fork and restore an older fork
-fork help        Show commands
-fork status      Show the linked account and routing status
+fork                  Interactive official agent in the current directory
+fork start            Start the background HTTPS task connector
+fork stop             Stop; tasks stay queued for this server
+fork uninstall        Stop, revoke this device and remove this installation
+fork help             Show commands
+fork pull APP_ID      Download all logical app files into the current directory
+fork push             Upload an immutable 24-hour preview, without publication
+fork test             Check the pushed preview with the optional Virtual computer
+fork app-create TITLE SLUG
 ```
 
-The same installation handles terminal chat and messages from your private Fork
-chats. App files stay in Fork and are edited through its SSH virtual filesystem
-via MCP. Background tasks use your own provider CLI and login. Stopping the
-connector never silently switches to paid Fork generation. To switch back,
-choose **Use Fork AI · Tokens** in Subscription or run `fork mode internal`.
-Group chats continue using Fork's existing chat behavior.
+## Local editing and preview
 
-Linux setup uses a systemd user service when available, otherwise a detached
-process. Detached mode survives terminal closure. For restart after reboot use
-`fork service install` and enable user lingering where permitted. Logs live
-beside the configuration in `agent.log`.
+App tasks download a complete logical snapshot into a private temporary workspace: frontend files, functions, agents, chat views and schemas. The official agent uses normal file/edit/shell tools. Its instructions explain `fork push` and the task-scoped computer tool. Final edits are also pushed as a preview automatically. Preview URLs use separate random subdomains, so root-relative assets work and user app HTML never runs on the Fork account origin. Previews expire after 24 hours. They do not publish or overwrite the saved app. Conflicting saved revisions return HTTP 409 instead of overwriting another edit.
 
-### Install without linking an account
+The preview serves frontend files. It does not execute unpublished backend functions or provision cloned databases. Test those changes separately before publication.
+
+The connector streams task events with heartbeats. A lost stream cancels the running agent and unfinished tasks are requeued. Saved completion receipts are resent after reconnect, preventing duplicate replies after an ambiguous completion request.
+
+## Virtual computer
+
+The optional package uses Fork computer's existing browser/workspace engine. Its local adapter speaks MCP over stdio; there is no public control listener and no Fork service credential. The Node adapter is scoped to an agent invocation. The checked-IP egress proxy and sandboxed browser start on the first actual computer command, then close when the invocation ends. Browser, tabs, clicking, input, inspection, screenshots, downloads and virtual workspace tools are available. Closing the browser explicitly is encouraged.
+
+The core task listener remains in the background; the Virtual computer does not run continuously. A plain chat does not start Chromium. A build can open its pushed preview, interact with it and verify the result. `fork test` is a one-request browser check that closes its computer when finished.
+
+Set `FORK_CHROME` to reuse a compatible installed browser. `FORK_CONFIG_DIR` isolates an installation for testing or another account. Config and device credentials are private; provider sign-in remains owned by the official agent CLI. Temporary app workspaces remain under the system temp directory for inspection and can be removed after use.
+
+## Build
 
 ```sh
-curl -fsSL https://github.com/forkco/fork-cli/releases/download/v0.3.0/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-fork help
+cargo test --locked
+cargo build --release --locked
 ```
 
-Then use the personalized command from Subscription, or use legacy interactive
-SSH enrollment: `fork login --host fork.me --agent claude` (or `codex`). It prompts
-for a one-time SSH token from your Fork host's `/auth` page. Provider login stays
-in the official CLI: `claude auth login` or `codex login --device-auth`.
-
-## Credentials and state
-
-Fork never reads provider credentials. The official CLI owns its login and runs
-on your machine. The setup token expires after 15 minutes, is stored only as a
-hash on Fork, and enrolls one dedicated Ed25519 SSH key. It is not saved in the
-CLI configuration. Existing API keys and other devices are unaffected. Keep the
-personalized command private and avoid saving it in shared shell history.
-
-The first SSH connection pins the gateway host key; a changed key is rejected.
-Config, dedicated key, pinned host key, private workspaces, per-chat provider
-session IDs and completion receipts are in `~/.config/fork-agent` on Linux (the
-standard user config directory on macOS). Use `fork --config PATH …` for another
-account or host. A saved completion is resent on reconnect without regenerating
-it. If interrupted before saving, a task can retry and must inspect existing
-files before editing.
-
-Uninstall removes only this Fork installation, its PATH block and SSH device;
-provider CLIs remain installed. If revocation cannot reach Fork, revoke the
-device in Fork settings. Private history and completion receipts are retained.
-
-## Develop and release
-
-Requires Go 1.25+ and Python 3 for subprocess integration tests.
-
-```sh
-make test
-make build
-make release VERSION=0.3.0
-```
-
-Release tags publish `install.sh`, four standalone binaries and SHA256SUMS. The installer verifies
-the selected binary checksum before installation. No backend configuration,
-secrets or private server source is included in this repository.
-
-Official CLI documentation: [Claude Code](https://code.claude.com/docs/en/setup)
-and [Codex](https://developers.openai.com/codex/cli).
+The source includes the legacy Go implementation for compatibility reference; current builds use `rust/main.rs`. Release jobs build Linux/macOS amd64/arm64 executables and package the optional computer separately. All public installer assets come from the corresponding GitHub Release.

@@ -1,7 +1,7 @@
 name: Test
 on:
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
   pull_request:
 permissions:
   contents: read
@@ -10,25 +10,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: go.mod
-          cache: true
-      - run: make test
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: virtual-computer/package-lock.json
+      - run: cargo test --locked
+      - run: npm ci --omit=dev --ignore-scripts
+        working-directory: virtual-computer
+      - run: npm test
+        working-directory: virtual-computer
       - run: sh -n install.sh
-      - name: Smoke-test published installer on Linux
-        timeout-minutes: 3
-        if: github.event_name == 'push'
-        shell: bash
+      - run: sudo apt-get update -qq && sudo apt-get install -y musl-tools
+      - name: Build portable Linux CLI
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/fork dist/fork-agent-linux-amd64
+          cp install.sh dist/install.sh
+          tar -czf dist/virtual-computer.tar.gz virtual-computer/src virtual-computer/package.json virtual-computer/package-lock.json virtual-computer/README.md
+          cd dist
+          sha256sum fork-agent-linux-amd64 virtual-computer.tar.gz > SHA256SUMS
+      - name: Install and uninstall without linking an account
         run: |
           set -euo pipefail
           task_dir=$(mktemp -d)
           trap 'rm -rf "$task_dir"' EXIT
-          export INSTALL_DIR="$task_dir/bin"
-          export XDG_CONFIG_HOME="$task_dir/config"
-          curl -fsSL --retry 3 --max-time 60 https://github.com/forkco/fork-cli/releases/download/v0.3.0/install.sh -o "$task_dir/install.sh"
-          sh "$task_dir/install.sh"
+          export INSTALL_DIR="$task_dir/bin" FORK_CONFIG_DIR="$task_dir/config"
+          export FORK_AGENT_DOWNLOAD_BASE="file://$PWD/dist"
+          sh install.sh
           "$INSTALL_DIR/fork" version
           "$INSTALL_DIR/fork" help
           "$INSTALL_DIR/fork" uninstall
           test ! -e "$INSTALL_DIR/fork"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux
+          path: dist/*

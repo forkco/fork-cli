@@ -1,0 +1,1 @@
+Fork Virtual computer is the task-scoped local adapter of Fork computer. Entry: src/stdio.js (MCP). The proxy and browser start lazily on the first computer command and close on stdin EOF or process termination. Browser sandbox and checked-IP egress remain enabled. Optional Node and Chromium dependencies are installed only when Virtual computer is selected.

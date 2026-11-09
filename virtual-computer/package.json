@@ -1,0 +1,22 @@
+{
+  "name": "@fork/virtual-computer",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node src/stdio.js",
+    "test": "node --test test/*.test.js",
+    "browsers": "playwright install chromium"
+  },
+  "dependencies": {
+    "acorn": "8.15.0",
+    "acorn-walk": "8.3.4",
+    "esbuild": "0.25.12",
+    "ipaddr.js": "2.2.0",
+    "playwright": "1.62.1",
+    "ssh2": "1.17.0"
+  }
+}

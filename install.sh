@@ -1,20 +1,23 @@
 #!/bin/sh
 set -eu
 
-version=${FORK_CLI_VERSION:-0.3.0}
+version=${FORK_CLI_VERSION:-0.4.0}
 base=${FORK_AGENT_DOWNLOAD_BASE:-https://github.com/forkco/fork-cli/releases/download/v$version}
 target=${INSTALL_DIR:-"$HOME/.local/bin"}
 host=${FORK_HOST:-fork.me}
 agent=claude
+virtual_computer=false
 setup_token=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --token) [ "$#" -ge 2 ] || exit 1; setup_token=$2; shift 2 ;;
         --host) [ "$#" -ge 2 ] || exit 1; host=$2; shift 2 ;;
         --agent) [ "$#" -ge 2 ] || exit 1; agent=$2; shift 2 ;;
+        --virtual-computer) [ "$#" -ge 2 ] || exit 1; virtual_computer=$2; shift 2 ;;
         *) echo 'Unknown installer option.' >&2; exit 1 ;;
     esac
 done
+case "$virtual_computer" in true|false) ;; *) echo "Virtual computer must be true or false." >&2; exit 1 ;; esac
 case "$agent" in claude|codex) ;; *) echo 'Choose --agent claude or --agent codex.' >&2; exit 1 ;; esac
 case "$host" in ''|-*|*[!a-zA-Z0-9.:-]*) echo 'Invalid Fork host.' >&2; exit 1 ;; esac
 case "$(uname -s)" in Linux) platform=linux ;; Darwin) platform=darwin ;; *) echo 'Supported systems: Linux and macOS.' >&2; exit 1 ;; esac
@@ -38,6 +41,12 @@ fi
 [ "$expected" = "$actual" ] || { echo 'Release checksum mismatch; installation stopped.' >&2; exit 1; }
 mkdir -p "$target"
 previous=
+if [ -x "$target/fork" ]; then
+    case "$("$target/fork" version 2>/dev/null || true)" in
+        'fork 0.3.'*) "$target/fork" service uninstall >/dev/null 2>&1 || true; "$target/fork" stop >/dev/null 2>&1 || true ;;
+        'fork '*) "$target/fork" stop >/dev/null 2>&1 || true ;;
+    esac
+fi
 if [ -e "$target/fork" ] || [ -L "$target/fork" ]; then
     if [ ! -e "$target/fork-agent" ] || [ ! "$target/fork" -ef "$target/fork-agent" ]; then
         previous="$target/fork.before-$(date +%s)-$$"
@@ -50,6 +59,15 @@ ln -sf fork "$target/fork-agent"
 "$target/fork" installed --previous "$previous"
 export PATH="$target:$HOME/.local/bin:$PATH"
 echo "Installed $target/fork"
+if [ "$virtual_computer" = true ]; then
+    curl -fsSL "$base/virtual-computer.tar.gz" -o "$temp/virtual-computer.tar.gz"
+    expected=$(awk '$2=="virtual-computer.tar.gz" {print $1}' "$temp/SHA256SUMS")
+    if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$temp/virtual-computer.tar.gz" | awk '{print $1}'); else actual=$(shasum -a 256 "$temp/virtual-computer.tar.gz" | awk '{print $1}'); fi
+    [ -n "$expected" ] && [ "$expected" = "$actual" ] || { echo 'Virtual computer checksum mismatch.' >&2; exit 1; }
+    cli_dir=$("$target/fork" config-dir)
+    tar -xzf "$temp/virtual-computer.tar.gz" -C "$cli_dir"
+    "$target/fork" virtual-install "$cli_dir/virtual-computer"
+fi
 if [ -n "$setup_token" ]; then
     if [ "$agent" = claude ] && ! command -v claude >/dev/null 2>&1; then
         echo 'Installing official Claude Code…'
@@ -61,7 +79,7 @@ if [ -n "$setup_token" ]; then
         curl -fsSL https://chatgpt.com/codex/install.sh -o "$temp/codex-install.sh"
         sh "$temp/codex-install.sh"
     fi
-    printf '%s\n' "$setup_token" | "$target/fork" setup --host "$host" --agent "$agent" --token-stdin
+    printf '%s\n' "$setup_token" | "$target/fork" setup --host "$host" --agent "$agent" --virtual-computer "$virtual_computer" --token-stdin
     unset setup_token
 else
     echo "Connect using the install command in Fork → Subscription, or: $target/fork login --host $host --agent $agent"

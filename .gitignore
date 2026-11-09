@@ -3,3 +3,7 @@
 .DS_Store
 *.log
 .env*
+
+/target/
+/virtual-computer/node_modules/
+/virtual-computer/browsers/

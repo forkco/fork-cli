@@ -1,17 +1,16 @@
-VERSION ?= 0.3.0
-
+VERSION ?= 0.4.0
 .PHONY: build test release
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o bin/fork ./cmd/fork
+	cargo build --release --locked
+	mkdir -p bin
+	cp target/release/fork bin/fork
 
 test:
-	go test -race ./...
+	cargo test --locked
 
-release:
+release: build
 	mkdir -p dist
-	@for platform in linux darwin; do for arch in amd64 arm64; do \
-		CGO_ENABLED=0 GOOS=$$platform GOARCH=$$arch go build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o dist/fork-agent-$$platform-$$arch ./cmd/fork || exit 1; \
-	done; done
-	# Match the installer default to the version of these release binaries.
+	cp target/release/fork dist/fork-agent-$(shell uname -s | tr A-Z a-z)-$(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 	sed 's/^version=.*/version=$${FORK_CLI_VERSION:-$(VERSION)}/' install.sh > dist/install.sh
-	cd dist && shasum -a 256 fork-agent-linux-amd64 fork-agent-linux-arm64 fork-agent-darwin-amd64 fork-agent-darwin-arm64 > SHA256SUMS
+	tar -czf dist/virtual-computer.tar.gz virtual-computer/src virtual-computer/package.json virtual-computer/package-lock.json virtual-computer/README.md
+	cd dist && shasum -a 256 fork-agent-* virtual-computer.tar.gz > SHA256SUMS
