@@ -86,3 +86,11 @@ upgrade before web-approved updates are supported.
 Chat icons are selected by your own agent in the same response. The connector
 strips the transport metadata before publishing the answer and preserves existing
 icons. The prompt is in [`rust/chat-metadata-prompt.md`](rust/chat-metadata-prompt.md).
+
+### v0.4.8: native web tools and failures
+
+Claude tasks allow WebSearch and WebFetch with or without Virtual computer. An
+optional tool permission denial does not mark a normally completed reply as a
+failed turn. Connector chat metadata is removed before both success and failure
+handling. Terminal failures carry a separate bounded failure receipt; the web
+interface shows a localized error instead of native diagnostics.

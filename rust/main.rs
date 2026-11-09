@@ -314,6 +314,7 @@ fn browser(root: &Path, url: &str) -> Result<String> {
 struct TaskResult {
     summary: String,
     chat_emoji: String,
+    failure: Option<Value>,
     usage: Option<Value>,
 }
 
@@ -342,17 +343,14 @@ fn agent_result(agent: &str, raw: &str, success: bool) -> Result<TaskResult> {
             );
         }
         result.summary = v["result"].as_str().unwrap_or("").to_string();
-        if !success
-            || v["is_error"].as_bool() == Some(true)
-            || v["permission_denials"]
-                .as_array()
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
-        {
-            result.summary = format!(
-                "Fork agent could not finish: Claude reported an error.\n{}",
-                result.summary
+        extract_chat_emoji(&mut result);
+        // A denied optional tool is not a failed turn when Claude returned a
+        // normal answer explaining the limitation. Only terminal failures fail.
+        if !success || v["is_error"].as_bool() == Some(true) {
+            result.failure = Some(
+                json!({"code":"agent_failed","diagnostic":v.get("errors").filter(|v|!v.is_null()).unwrap_or(&v["result"]).to_string().chars().take(4000).collect::<String>()}),
             );
+            result.summary = "The connected agent could not complete this request. Try again or check the agent on your server.".into();
         }
     } else {
         let events: Vec<Value> = raw
@@ -397,35 +395,44 @@ fn agent_result(agent: &str, raw: &str, success: bool) -> Result<TaskResult> {
                 .iter()
                 .any(|v| v["type"] == "turn.failed" || v["type"] == "error")
         {
-            result.summary = format!(
-                "Fork agent could not finish: Codex did not complete the turn.\n{}",
-                result.summary
+            result.failure = Some(
+                json!({"code":"agent_failed","diagnostic":events.iter().filter(|e|e["type"]=="turn.failed"||e["type"]=="error").map(Value::to_string).collect::<Vec<_>>().join("\n").chars().take(4000).collect::<String>()}),
             );
+            result.summary = "The connected agent could not complete this request. Try again or check the agent on your server.".into();
         }
     }
+    extract_chat_emoji(&mut result);
     Ok(result)
 }
 
 fn extract_chat_emoji(result: &mut TaskResult) {
-    let trimmed = result.summary.trim_start();
-    let Some((first, rest)) = trimmed.split_once('\n') else {
-        return;
-    };
-    let Some(meta) = first
-        .trim()
-        .strip_prefix("<!-- fork-chat:")
-        .and_then(|v| v.strip_suffix("-->"))
-    else {
-        return;
-    };
-    if let Ok(value) = serde_json::from_str::<Value>(meta.trim()) {
-        if let Some(emoji) = value["emoji"].as_str().filter(|e| {
-            !e.is_ascii() && e.chars().count() <= 16 && !e.chars().any(char::is_whitespace)
-        }) {
-            result.chat_emoji = emoji.to_string();
+    let mut visible = Vec::new();
+    for line in result.summary.lines() {
+        if let Some(meta) = line
+            .trim()
+            .strip_prefix("<!-- fork-chat:")
+            .and_then(|v| v.strip_suffix("-->"))
+        {
+            if let Ok(value) = serde_json::from_str::<Value>(meta.trim()) {
+                if let Some(emoji) = value["emoji"].as_str().filter(|e| {
+                    !e.is_ascii() && e.chars().count() <= 16 && !e.chars().any(char::is_whitespace)
+                }) {
+                    result.chat_emoji = emoji.into();
+                }
+            }
+        } else {
+            visible.push(line);
         }
     }
-    result.summary = rest.trim_start().to_string();
+    result.summary = visible.join("\n").trim().into();
+}
+
+fn claude_task_tools(virtual_computer: bool) -> &'static str {
+    if virtual_computer {
+        "Read,Edit,Write,Bash,Glob,Grep,WebSearch,WebFetch,mcp__virtual_computer__computer"
+    } else {
+        "Read,Edit,Write,Bash,Glob,Grep,WebSearch,WebFetch"
+    }
 }
 
 fn run_task(
@@ -472,7 +479,7 @@ fn run_task(
             "--permission-mode",
             "acceptEdits",
             "--allowedTools",
-            "Read,Edit,Write,Bash,Glob,Grep",
+            claude_task_tools(c.virtual_computer),
             "--setting-sources",
             "",
             "--max-turns",
@@ -506,13 +513,7 @@ fn run_task(
         }
     }
     if c.virtual_computer && c.agent == "claude" {
-        cmd.args([
-            "--strict-mcp-config",
-            "--mcp-config",
-            &virtual_mcp()?,
-            "--allowedTools",
-            "Read,Edit,Write,Bash,Glob,Grep,mcp__virtual_computer__computer",
-        ]);
+        cmd.args(["--strict-mcp-config", "--mcp-config", &virtual_mcp()?]);
     }
     cmd.current_dir(&root)
         .stdin(Stdio::piped())
@@ -726,12 +727,13 @@ fn run(c: &Config) -> Result<()> {
                     let saved = fs::read(&receipt)
                         .ok()
                         .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-                    let result = if let Some(saved) = saved {
+                    let mut result = if let Some(saved) = saved {
                         if saved["task"] != task {
                             return Err("Redelivered task differs".into());
                         }
                         TaskResult {
                             summary: saved["summary"].as_str().unwrap_or("").to_string(),
+                            failure: saved.get("failure").filter(|v| !v.is_null()).cloned(),
                             chat_emoji: saved["chat_emoji"].as_str().unwrap_or("").to_string(),
                             usage: saved.get("usage").filter(|v| !v.is_null()).cloned(),
                         }
@@ -743,13 +745,17 @@ fn run(c: &Config) -> Result<()> {
                                     break;
                                 }
                                 TaskResult {
-                                    summary: format!("Fork agent could not finish: {e}"),
+                                    summary: "The connected agent could not complete this request. Try again or check the agent on your server.".into(),
+                                    failure: Some(
+                                        json!({"code":"agent_failed","diagnostic":e.to_string()}),
+                                    ),
                                     chat_emoji: String::new(),
                                     usage: None,
                                 }
                             }
                         }
                     };
+                    extract_chat_emoji(&mut result);
                     let mut summary = result.summary;
                     let chat_emoji = result.chat_emoji;
                     while summary.len() > 65535 {
@@ -757,14 +763,14 @@ fn run(c: &Config) -> Result<()> {
                     }
                     save(
                         &receipt,
-                        &json!({"task":task,"summary":summary,"usage":result.usage,"chat_emoji":chat_emoji}),
+                        &json!({"task":task,"summary":summary,"usage":result.usage,"chat_emoji":chat_emoji,"failure":result.failure}),
                     )?;
                     if let Err(e) = request(
                         c,
                         "POST",
                         &format!("/api/cli/tasks/{id}/complete"),
                         Some(
-                            json!({"summary":summary,"usage":result.usage,"chat_emoji":chat_emoji}),
+                            json!({"summary":summary,"usage":result.usage,"chat_emoji":chat_emoji,"failure":result.failure}),
                         ),
                     ) {
                         eprintln!("Completion pending retry: {e}");
@@ -1229,10 +1235,46 @@ fn ensure_agent(c: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn optional_denial_is_not_a_terminal_failure() {
+        let raw = r#"{"result":"<!-- fork-chat: {\"emoji\":\"💎\"} -->\nНе удалось выполнить поиск.","is_error":false,"permission_denials":[{"tool_name":"WebSearch"}],"usage":{"output_tokens":10}}"#;
+        let result = agent_result("claude", raw, true).unwrap();
+        assert!(result.failure.is_none());
+        assert_eq!(result.summary, "Не удалось выполнить поиск.");
+        assert_eq!(result.chat_emoji, "💎");
+    }
+    #[test]
+    fn failed_turn_keeps_metadata_out_of_the_user_error() {
+        let result=agent_result("claude",r#"{"result":"<!-- fork-chat: {\"emoji\":\"💎\"} -->\nprovider auth failure", "is_error":true}"#,true).unwrap();
+        assert!(!result.summary.contains("fork-chat"));
+        assert!(!result.summary.contains("provider auth failure"));
+        assert_eq!(result.chat_emoji, "💎");
+        assert_eq!(result.failure.unwrap()["code"], "agent_failed");
+    }
+    #[test]
+    fn metadata_is_stripped_even_after_a_legacy_error_prefix() {
+        let mut result = TaskResult {
+            summary: "legacy error\n<!-- fork-chat: {\"emoji\":\"💎\"} -->\nAnswer".into(),
+            ..Default::default()
+        };
+        extract_chat_emoji(&mut result);
+        assert_eq!(result.summary, "legacy error\nAnswer");
+        assert_eq!(result.chat_emoji, "💎");
+    }
+    #[test]
+    fn web_tools_are_enabled_with_and_without_the_computer() {
+        for enabled in [false, true] {
+            let tools = claude_task_tools(enabled).split(',').collect::<Vec<_>>();
+            assert!(tools.contains(&"WebSearch"));
+            assert!(tools.contains(&"WebFetch"));
+            assert_eq!(tools.contains(&"mcp__virtual_computer__computer"), enabled);
+        }
+    }
+    #[test]
     fn chat_metadata_is_removed_from_the_visible_answer() {
         let mut result = super::TaskResult {
             summary: "<!-- fork-chat: {\"emoji\":\"🧪\"} -->\nEXACT_ANSWER".into(),
             chat_emoji: String::new(),
+            failure: None,
             usage: None,
         };
         super::extract_chat_emoji(&mut result);
@@ -1266,7 +1308,8 @@ mod tests {
         assert_eq!(u["cache_creation_input_tokens"], 30);
         assert_eq!(u["model"], "claude-sonnet-test");
         let r = agent_result("claude", raw, false).unwrap();
-        assert!(r.summary.contains("could not finish"));
+        assert!(!r.summary.contains("could not finish"));
+        assert_eq!(r.failure.as_ref().unwrap()["code"], "agent_failed");
         assert_eq!(r.usage.unwrap()["output_tokens"], 8);
         assert!(agent_result("claude", r#"{"result":"old"}"#, true)
             .unwrap()
