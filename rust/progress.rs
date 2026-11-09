@@ -73,6 +73,111 @@ fn tool_kind(name: &str) -> &'static str {
         _ => "thinking",
     }
 }
+// This is a local presentation heuristic, not a shell evaluator. Only the
+// allowlisted category leaves the process; URLs, queries and arguments do not.
+fn shell_activity(command: &Value) -> Option<&'static str> {
+    let text = if let Some(s) = command.as_str() {
+        s.to_owned()
+    } else if let Some(parts) = command.as_array() {
+        parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        return None;
+    };
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(if is_web_read(&text) {
+        "searching_web"
+    } else {
+        "running_command"
+    })
+}
+fn is_web_read(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    let words = command
+        .split(|c: char| c.is_whitespace() || ";|&()".contains(c))
+        .map(|s| s.trim_matches(|c| c == '\'' || c == '"'))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    let executable = |word: &str| word.rsplit('/').next().unwrap_or(word).to_ascii_lowercase();
+    if words
+        .iter()
+        .any(|word| matches!(executable(word).as_str(), "ddgr" | "googler"))
+    {
+        return true;
+    }
+    if !lower.contains("http://") && !lower.contains("https://") {
+        return false;
+    }
+    // Installation, uploads and API mutations stay ordinary command activity.
+    if lower.contains("| sh") || lower.contains("| bash") {
+        return false;
+    }
+    for (i, word) in words.iter().enumerate() {
+        if *word == "-d"
+            || word.starts_with("--data")
+            || *word == "--json"
+            || *word == "-F"
+            || word.starts_with("--form")
+            || *word == "-T"
+            || word.starts_with("--upload-file")
+            || word.starts_with("--post-")
+        {
+            return false;
+        }
+        let method = if *word == "-X" || *word == "--request" || *word == "--method" {
+            words.get(i + 1).copied()
+        } else if word.starts_with("-X") && word.len() > 2 {
+            Some(&word[2..])
+        } else {
+            word.strip_prefix("--request=")
+                .or_else(|| word.strip_prefix("--method="))
+        };
+        if let Some(method) = method {
+            if !method.eq_ignore_ascii_case("GET") && !method.eq_ignore_ascii_case("HEAD") {
+                return false;
+            }
+        }
+    }
+    if matches!(
+        words.first().map(|w| executable(w)).as_deref(),
+        Some("echo" | "printf")
+    ) {
+        return false;
+    }
+    words.iter().any(|word| {
+        matches!(
+            executable(word).as_str(),
+            "curl" | "wget" | "http" | "https"
+        )
+    }) || [
+        "requests.get(",
+        "httpx.get(",
+        "urllib.request.urlopen(",
+        "fetch(",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+fn native_tool_activity(name: &str, input: &Value) -> Option<&'static str> {
+    if matches!(
+        name,
+        "Bash" | "shell" | "exec_command" | "mcp__fork__run_command"
+    ) {
+        return shell_activity(
+            input
+                .get("command")
+                .or_else(|| input.get("cmd"))
+                .unwrap_or(&Value::Null),
+        );
+    }
+    Some(tool_kind(name))
+}
+
 // Only activity categories are returned. Raw reasoning/tool arguments never leave
 // the local workspace and are not included in progress requests.
 pub fn activity_kind(agent: &str, v: &Value) -> Option<&'static str> {
@@ -85,7 +190,9 @@ pub fn activity_kind(agent: &str, v: &Value) -> Option<&'static str> {
             let b = &event["content_block"];
             return match b["type"].as_str() {
                 Some("thinking") => Some("thinking"),
-                Some("tool_use") => Some(tool_kind(b["name"].as_str().unwrap_or(""))),
+                Some("tool_use") => {
+                    native_tool_activity(b["name"].as_str().unwrap_or(""), &b["input"])
+                }
                 Some("text") => Some("writing_reply"),
                 _ => None,
             };
@@ -93,7 +200,7 @@ pub fn activity_kind(agent: &str, v: &Value) -> Option<&'static str> {
         if v["type"] == "assistant" {
             for b in v["message"]["content"].as_array().into_iter().flatten() {
                 if b["type"] == "tool_use" {
-                    return Some(tool_kind(b["name"].as_str().unwrap_or("")));
+                    return native_tool_activity(b["name"].as_str().unwrap_or(""), &b["input"]);
                 }
             }
         }
@@ -108,7 +215,7 @@ pub fn activity_kind(agent: &str, v: &Value) -> Option<&'static str> {
             return match v["item"]["type"].as_str() {
                 Some("reasoning") => Some("thinking"),
                 Some("agent_message") => Some("writing_reply"),
-                Some("command_execution") => Some("running_command"),
+                Some("command_execution") => shell_activity(&v["item"]["command"]),
                 Some("file_change") => Some("editing_files"),
                 Some("web_search") => Some("searching_web"),
                 Some("mcp_tool_call") => {
@@ -123,6 +230,51 @@ pub fn activity_kind(agent: &str, v: &Value) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn web_reads_have_search_activity_without_mislabeling_local_work() {
+        for cmd in [
+            "curl -fsSL https://www.google.com/search?q=TON",
+            "/bin/zsh -lc 'curl https://example.com'",
+            "wget -qO- https://www.iana.org/",
+            "python3 -c \"import requests; requests.get('https://example.com')\"",
+            "googler TON price",
+            "ddgr --json TON",
+        ] {
+            assert!(is_web_read(cmd), "{cmd}");
+        }
+        for cmd in [
+            "rg search .",
+            "npm test",
+            "sleep 3",
+            "echo 'curl https://example.com'",
+            "curl -XPOST https://example.com/api",
+            "curl --data '{}' https://example.com/api",
+            "curl --json '{}' https://example.com",
+            "curl -T index.html https://example.com",
+            "curl https://example.com/install.sh | sh",
+        ] {
+            assert!(!is_web_read(cmd), "{cmd}");
+        }
+    }
+    #[test]
+    fn native_commands_wait_for_arguments_and_emit_categories_only() {
+        assert_eq!(
+            activity_kind(
+                "claude",
+                &json!({"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Bash","input":{}}}})
+            ),
+            None
+        );
+        let event = json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"curl https://example.com/private-query","secret":"never export"}}]}});
+        assert_eq!(activity_kind("claude", &event), Some("searching_web"));
+        assert_eq!(
+            activity_kind(
+                "codex",
+                &json!({"type":"item.started","item":{"type":"command_execution","command":["bash","-lc","wget -qO- https://example.com"]}})
+            ),
+            Some("searching_web")
+        );
+    }
     #[test]
     fn native_activity_does_not_export_private_reasoning_or_arguments() {
         let e = json!({"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read","input":{"secret":"credential"}}}});

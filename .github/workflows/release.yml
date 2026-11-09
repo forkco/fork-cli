@@ -41,6 +41,10 @@ jobs:
           cargo build --release --locked --target "$TARGET"
           mkdir -p dist
           cp "target/$TARGET/release/fork" "dist/fork-agent-$PLATFORM"
+      - name: Verify command permissions
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: python3 tests/test-command-approval.py "dist/fork-agent-$PLATFORM"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}

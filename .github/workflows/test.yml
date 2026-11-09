@@ -35,6 +35,8 @@ jobs:
           tar -czf dist/virtual-computer.tar.gz virtual-computer/src virtual-computer/deploy virtual-computer/package.json virtual-computer/package-lock.json virtual-computer/README.md
           cd dist
           sha256sum fork-agent-linux-amd64 virtual-computer.tar.gz > SHA256SUMS
+      - name: Verify the server command permission gate
+        run: python3 tests/test-command-approval.py dist/fork-agent-linux-amd64
       - name: Install and uninstall without linking an account
         run: |
           set -euo pipefail

@@ -94,3 +94,27 @@ optional tool permission denial does not mark a normally completed reply as a
 failed turn. Connector chat metadata is removed before both success and failure
 handling. Terminal failures carry a separate bounded failure receipt; the web
 interface shows a localized error instead of native diagnostics.
+
+### v0.4.9: web activity in shell tools
+
+Read-only web requests through curl, wget, Python/JavaScript HTTP clients and
+googler/ddgr use the same “Searching the web…” status as native WebSearch/WebFetch.
+Local commands, uploads, API writes and installers retain command activity. Shell
+arguments are classified locally and are never sent in activity requests.
+
+### Server commands and app proposals
+
+Web-driven tasks use the compact built-in Rust MCP server. Native shell tools
+are disabled. Before `run_command` executes anything, Fork shows the exact
+command and directory in a private permission widget: allow once, similar
+commands in that directory, or all commands in this chat/CLI session. Denials,
+expired leases and failed approval requests never start a process. Reconnecting
+starts a new session. Interactive terminal mode keeps the native agent's own
+approval controls.
+
+New apps start with the ordinary Fork proposal card. `propose_app` only sends
+that card; the user confirms Create app in Fork before an app build is queued.
+The build pulls all files into an isolated temporary workspace, edits them with
+native tools, optionally tests with Virtual computer, and uploads an immutable
+preview. Fork commits the approved build under its normal version/build lease.
+`fork app-create` is retired; ask in the web chat and confirm the proposal.
