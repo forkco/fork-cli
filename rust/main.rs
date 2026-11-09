@@ -1,3 +1,4 @@
+mod models;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::os::unix::{
@@ -388,7 +389,9 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<TaskRes
     fs::create_dir_all(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     fs::create_dir_all(root.join(".fork"))?;
-    let app = task["active_app_id"].as_str().filter(|s| !s.is_empty());
+    let app = task["active_app_id"]
+        .as_str()
+        .filter(|s| !s.is_empty() && *s != "dashboard" && *s != "public");
     if let Some(app) = app {
         pull(c, app, &root)?;
     }
@@ -422,6 +425,9 @@ fn run_task(c: &Config, task: &Value, alive: &Arc<AtomicBool>) -> Result<TaskRes
             "workspace-write",
             "-",
         ]);
+    }
+    if let Some(model) = models::selected(task)? {
+        cmd.args(["--model", model]);
     }
     if c.agent == "codex" {
         // Fork commands write private transport/config metadata outside the app.
@@ -537,6 +543,7 @@ fn run(c: &Config) -> Result<()> {
         }
     });
     request(c, "PUT", "/api/cli/settings", Some(json!({"enabled":true})))?;
+    let native_models = models::discover(&c.agent).unwrap_or_default();
     while RUN.load(Ordering::SeqCst) {
         let mut stream = Command::new("curl")
             .args([
@@ -558,6 +565,8 @@ fn run(c: &Config) -> Result<()> {
         let alive = Arc::new(AtomicBool::new(true));
         let reader_alive = alive.clone();
         let (tx, rx) = mpsc::channel();
+        let stream_config = c.clone();
+        let stream_models = native_models.clone();
         std::thread::spawn(move || {
             let mut event = String::new();
             for line in io::BufReader::new(reader).lines() {
@@ -565,6 +574,23 @@ fn run(c: &Config) -> Result<()> {
                 if let Some(v) = line.strip_prefix("event: ") {
                     event = v.into()
                 } else if let Some(v) = line.strip_prefix("data: ") {
+                    if event == "ready" {
+                        if let Ok(ready) = serde_json::from_str::<Value>(v) {
+                            if let Some(id) = ready["session_id"]
+                                .as_str()
+                                .filter(|id| id.chars().all(|b| b.is_ascii_hexdigit() || b == '-'))
+                            {
+                                if let Err(e) = request(
+                                    &stream_config,
+                                    "POST",
+                                    &format!("/api/cli/sessions/{id}/models"),
+                                    Some(json!({"models":stream_models})),
+                                ) {
+                                    eprintln!("Model catalog unavailable: {e}");
+                                }
+                            }
+                        }
+                    }
                     if event == "task" {
                         if let Ok(task) = serde_json::from_str::<Value>(v) {
                             if tx.send(task).is_err() {
@@ -654,6 +680,7 @@ fn cli() -> Result<()> {
  "version"=>println!("fork {}",env!("CARGO_PKG_VERSION")),
  "help"=>println!("fork — local Claude/Codex connected to Fork over HTTPS\n\nfork start | stop | uninstall | help\nfork pull APP_ID — download the complete app into this directory\nfork push — upload an immutable preview\nfork save — save changes as an app version\nfork test — test the preview with your Virtual computer\nfork app-create TITLE SLUG — create an app\nfork — interactive agent in the current workspace"),
  "setup"=>{let opt=|s:&str|a.iter().position(|v|v==s).and_then(|i|a.get(i+1)).cloned();let host=opt("--host").unwrap_or("fork.me".into());if host.contains('/')||host.contains('@')||host.chars().any(char::is_whitespace){return Err("Invalid host".into())}let agent=opt("--agent").unwrap_or("claude".into());if !["claude","codex"].contains(&agent.as_str()){return Err("Invalid agent".into())}let mut token=String::new();io::stdin().read_to_string(&mut token)?;let mut c=Config{origin:format!("https://{host}"),token:String::new(),agent,virtual_computer:opt("--virtual-computer").as_deref()==Some("true")};ensure_agent(&c)?;let result=request(&c,"POST","/api/auth/cli/enroll-http",Some(json!({"token":token.trim()})))?;c.token=result["token"].as_str().ok_or("No device token")?.into();save(&dir().join("config.json"),&c)?;start()?;},
+ "models"=>println!("{}",serde_json::to_string(&models::discover(&cfg()?.agent)?)?),
  "status"=>println!("{}",request(&cfg()?,"GET","/api/cli/settings",None)?),
  "run"=>run(&cfg()?)?,"start"=>start()?,"stop"=>stop()?,
  "uninstall"=>uninstall()?,
