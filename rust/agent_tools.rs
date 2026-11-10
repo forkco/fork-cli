@@ -21,7 +21,8 @@ fn context() -> Result<(String, String, PathBuf)> {
 }
 fn schemas() -> Value {
     json!([{"name":"run_command","description":"Run a shell command on the user's connected server. The web UI must approve it before execution. A denial must be respected; never work around it with another tool.","inputSchema":{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Absolute working directory; defaults to the task workspace"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":300}},"required":["command"],"additionalProperties":false}},
-    {"name":"propose_app","description":"Send Fork's standard app proposal card. Creating a new Fork app MUST use this tool, then end the turn silently with no user-facing text before or after the card. Do not repeat features or explain how to confirm; the card already does that. Wait for UI confirmation before building. Never generate app files in a chat before that confirmation.","inputSchema":{"type":"object","properties":{"app_name":{"type":"string","description":"Short lowercase URL slug"},"title":{"type":"string"},"description":{"type":"string"},"features":{"type":"array","items":{"type":"string"}},"name_options":{"type":"array","items":{"type":"string"}},"bg_color":{"type":"string"},"bg_color_light":{"type":"string"},"app_type":{"type":"string","enum":["web","website","document","agent"]},"website_name":{"type":"string"},"no_auth":{"type":"boolean"}},"required":["app_name","title","description","features"],"additionalProperties":false}}])
+    {"name":"propose_app","description":"Send Fork's standard app proposal card. Creating a new Fork app MUST use this tool, then end the turn silently with no user-facing text before or after the card. Do not repeat features or explain how to confirm; the card already does that. Wait for UI confirmation before building. Never generate app files in a chat before that confirmation.","inputSchema":{"type":"object","properties":{"app_name":{"type":"string","description":"Short lowercase URL slug"},"title":{"type":"string"},"description":{"type":"string"},"features":{"type":"array","items":{"type":"string"}},"name_options":{"type":"array","items":{"type":"string"}},"bg_color":{"type":"string"},"bg_color_light":{"type":"string"},"app_type":{"type":"string","enum":["web","website","document","agent"]},"website_name":{"type":"string"},"no_auth":{"type":"boolean"}},"required":["app_name","title","description","features"],"additionalProperties":false}},
+ {"name":"publish_app_icon","description":"Publish the actual PNG/JPEG image generated for the app using the exact supplied Fork artwork prompt. Only available in a confirmed build. Never upload SVG, a placeholder or a screenshot of the app.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path of the generated raster artwork, including native image-generation output paths"}},"required":["path"],"additionalProperties":false}}])
 }
 fn read_output(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
@@ -119,6 +120,28 @@ fn call(name: &str, args: &Value) -> Result<Value> {
                     .clamp(1, 300),
             )
         }
+        "publish_app_icon" => {
+            let path = PathBuf::from(args["path"].as_str().ok_or("Missing image path")?);
+            if !path.is_absolute() {
+                return Err("Image path must be absolute".into());
+            }
+            let metadata = fs::metadata(&path)?;
+            if !metadata.is_file() || metadata.len() > 8 * 1024 * 1024 {
+                return Err("Image must be up to 8 MB".into());
+            }
+            let data = fs::read(path)?;
+            if !(data.starts_with(b"\x89PNG\r\n\x1a\n") || data.starts_with(b"\xff\xd8\xff")) {
+                return Err("Use a generated PNG or JPEG image".into());
+            }
+            let answer = request_timeout(
+                &c,
+                "POST",
+                &format!("/api/cli/tasks/{task}/icon"),
+                Some(json!({"session_id":session,"image_base64":base64(&data)})),
+                "60",
+            )?;
+            Ok(tool_text(format!("App artwork published: {answer}"), false))
+        }
         "propose_app" => {
             let answer = request(
                 &c,
@@ -203,5 +226,44 @@ pub fn codex_config(c: &Config) -> Result<String> {
     } else {
         String::new()
     };
-    Ok(format!("mcp_servers={{fork={{command={exe},args=[\"agent-tools\"],env={{{envs}}},required=true,tool_timeout_sec=660,tools={{run_command={{approval_mode=\"approve\"}},propose_app={{approval_mode=\"approve\"}}}}}}{virtual_pc}}}"))
+    Ok(format!("mcp_servers={{fork={{command={exe},args=[\"agent-tools\"],env={{{envs}}},required=true,tool_timeout_sec=660,tools={{run_command={{approval_mode=\"approve\"}},propose_app={{approval_mode=\"approve\"}},publish_app_icon={{approval_mode=\"approve\"}}}}}}{virtual_pc}}}"))
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for block in bytes.chunks(3) {
+        let a = block[0] as usize;
+        let b = *block.get(1).unwrap_or(&0) as usize;
+        let c = *block.get(2).unwrap_or(&0) as usize;
+        out.push(CHARS[a >> 2] as char);
+        out.push(CHARS[((a & 3) << 4) | (b >> 4)] as char);
+        out.push(if block.len() > 1 {
+            CHARS[((b & 15) << 2) | (c >> 6)] as char
+        } else {
+            '='
+        });
+        out.push(if block.len() > 2 {
+            CHARS[c & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+#[cfg(test)]
+mod icon_tests {
+    use super::*;
+    #[test]
+    fn image_encoding_round_trips_padding() {
+        for (raw, expected) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(raw.as_bytes()), expected);
+        }
+    }
 }

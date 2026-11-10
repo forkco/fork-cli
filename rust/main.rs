@@ -1,6 +1,7 @@
 mod agent_tools;
 mod models;
 mod progress;
+mod trace;
 mod update;
 const REPLY_STYLE: &str = include_str!("reply-style-prompt.md");
 use serde::{Deserialize, Serialize};
@@ -432,9 +433,9 @@ fn extract_chat_emoji(result: &mut TaskResult) {
 
 fn claude_task_tools(virtual_computer: bool) -> &'static str {
     if virtual_computer {
-        "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__fork__run_command,mcp__fork__propose_app,mcp__virtual_computer__computer"
+        "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__fork__run_command,mcp__fork__propose_app,mcp__fork__publish_app_icon,mcp__virtual_computer__computer"
     } else {
-        "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__fork__run_command,mcp__fork__propose_app"
+        "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__fork__run_command,mcp__fork__propose_app,mcp__fork__publish_app_icon"
     }
 }
 
@@ -449,6 +450,7 @@ fn run_task(
         return Err("Invalid task ID".into());
     }
     let reporter = progress::Reporter::start(c, id, session, alive);
+    let trace = trace::Trace::start(c, task, session);
     let root = env::temp_dir().join(format!("fork-{}-{id}", std::process::id()));
     fs::create_dir_all(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
@@ -474,6 +476,14 @@ fn run_task(
     };
     let prompt = if task["payload"]["execution_kind"] == "build" {
         format!("APP BUILD HAS BEEN CONFIRMED: the user clicked Create app on the proposal. Build the approved app now in this active app workspace. Earlier instructions to wait before coding have been satisfied. Prefer Read/Edit/Write or apply_patch for app files; shell commands still need web approval. The connector uploads your completed app preview automatically.\n\n{prompt}")
+    } else {
+        prompt
+    };
+    let prompt = if let Some(art) = task["payload"]["icon_prompt"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+    {
+        format!("{prompt}\n\nAPP ARTWORK: Use an available native image-generation tool to generate one square raster image from the EXACT Fork artwork prompt below, then publish the generated local file with mcp__fork__publish_app_icon. Do not redraw it in SVG, HTML, code, emoji or a screenshot. Do not install a tool, read credentials or spend a separate API key. If your native agent has no image-generation tool or generation fails, continue building; Fork will generate the same artwork for free. The image-generation tool may save outside the workspace; pass its actual absolute output path to publish_app_icon. Do not put binary image data in app source files.\nEXACT ARTWORK PROMPT:\n{art}")
     } else {
         prompt
     };
@@ -544,6 +554,8 @@ fn run_task(
             "features.shell_tool=false",
             "-c",
             "features.unified_exec=false",
+            "-c",
+            "features.image_generation=true",
         ]);
         cmd.args(["-c", &agent_tools::codex_config(c)?]);
     }
@@ -569,6 +581,7 @@ fn run_task(
     let stdout = child.stdout.take().ok_or("Missing agent output")?;
     let activity = reporter.activity.clone();
     let agent = c.agent.clone();
+    let mut capture = trace.capture(&root);
     let reader = std::thread::spawn(move || -> io::Result<()> {
         let mut file = result;
         for line in io::BufReader::new(stdout).lines() {
@@ -577,6 +590,7 @@ fn run_task(
             if line.len() <= 256 * 1024 {
                 if let Ok(event) = serde_json::from_str::<Value>(&line) {
                     activity.native(&agent, &event);
+                    capture.native(&agent, &event);
                 }
             }
         }
@@ -611,6 +625,7 @@ fn run_task(
     let mut result = agent_result(&c.agent, &raw, success)?;
     extract_chat_emoji(&mut result);
     if root.join(".fork/workspace.json").exists() {
+        trace.status("Uploading app preview…");
         match push(c, &root) {
             Ok(url) => {
                 result.summary.push_str(&format!("\n\nPreview: {url}"));

@@ -126,3 +126,17 @@ card as the complete acknowledgement. Agents do not repeat its feature list,
 explain that files do not exist yet, or narrate its confirmation button. Hidden
 chat emoji metadata is still supported; requested explanations and real failures
 remain ordinary replies.
+
+### Native devlog and app artwork (v0.4.11)
+
+On app tasks, public actions, tool results and progress from Claude/Codex stream
+into Fork's ordinary devlog and remain available in its history. Private
+reasoning and browser screenshots are never sent as logs. Logging uses bounded
+batches and does not hold an offline build open indefinitely.
+
+Confirmed new app builds receive the same resolved artwork prompt as ordinary
+Fork builds. An available native image-generation tool creates the raster
+artwork and `publish_app_icon` uploads it. No provider API key is sent to Fork.
+If the native tool is unavailable, Fork generates the artwork for free without
+charging the user's Fork Tokens. The platform records that fallback cost as a
+separate CLI icon expense. Existing/user-selected artwork is preserved.
