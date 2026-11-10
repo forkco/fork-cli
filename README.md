@@ -140,3 +140,11 @@ artwork and `publish_app_icon` uploads it. No provider API key is sent to Fork.
 If the native tool is unavailable, Fork generates the artwork for free without
 charging the user's Fork Tokens. The platform records that fallback cost as a
 separate CLI icon expense. Existing/user-selected artwork is preserved.
+
+### Existing app edits (v0.4.12)
+
+Existing app conversations start in a read-only Manager role. Requested source
+or design changes go through `delegate_to_builder`; ordinary questions stay in
+chat. Fork starts a separate native Builder task, displays its standard build
+progress, commits the resulting preview and updates the app in place. Manager
+never silently edits local app files or uploads an uncommitted preview instead.

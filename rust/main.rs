@@ -433,9 +433,9 @@ fn extract_chat_emoji(result: &mut TaskResult) {
 
 fn claude_task_tools(virtual_computer: bool) -> &'static str {
     if virtual_computer {
-        "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__fork__run_command,mcp__fork__propose_app,mcp__fork__publish_app_icon,mcp__virtual_computer__computer"
+        "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__fork__run_command,mcp__fork__propose_app,mcp__fork__delegate_to_builder,mcp__fork__publish_app_icon,mcp__virtual_computer__computer"
     } else {
-        "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__fork__run_command,mcp__fork__propose_app,mcp__fork__publish_app_icon"
+        "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,mcp__fork__run_command,mcp__fork__propose_app,mcp__fork__delegate_to_builder,mcp__fork__publish_app_icon"
     }
 }
 
@@ -449,6 +449,7 @@ fn run_task(
     if !id.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-') {
         return Err("Invalid task ID".into());
     }
+    let app_manager = task["payload"]["execution_kind"] == "app_manager";
     let reporter = progress::Reporter::start(c, id, session, alive);
     let trace = trace::Trace::start(c, task, session);
     let root = env::temp_dir().join(format!("fork-{}-{id}", std::process::id()));
@@ -487,6 +488,11 @@ fn run_task(
     } else {
         prompt
     };
+    let prompt = if app_manager {
+        format!("APP MANAGER ROLE: This is an existing app conversation, before Builder starts. You may inspect files, answer questions, use web/computer tools or perform approved server maintenance. For ANY requested change to this app's source, design or behavior, call mcp__fork__delegate_to_builder with a complete implementation brief, then end silently. Do not edit app files, generate an app, upload a preview or save a version yourself. Builder starts automatically in a separate confirmed task and uses Fork's normal progress/completion UI. Questions with no requested changes should be answered normally without delegating. This role overrides the generic app-edit instructions below.\n\n{prompt}")
+    } else {
+        prompt
+    };
     fs::write(root.join("FORK_TASK.md"), &prompt)?;
     let result = fs::File::create(root.join(".fork/result.json"))?;
     let errors = fs::File::create(root.join(".fork/errors.log"))?;
@@ -503,13 +509,13 @@ fn run_task(
             "--permission-mode",
             "acceptEdits",
             "--tools",
-            if app.is_some() {
+            if app.is_some() && !app_manager {
                 "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch,ToolSearch"
             } else {
                 "Read,Glob,Grep,WebSearch,WebFetch,ToolSearch"
             },
             "--allowedTools",
-            claude_task_tools(c.virtual_computer),
+            if app_manager { "Read,Glob,Grep,WebSearch,WebFetch,mcp__fork__run_command,mcp__fork__delegate_to_builder,mcp__virtual_computer__computer" } else {claude_task_tools(c.virtual_computer)},
             "--setting-sources",
             "",
             "--max-turns",
@@ -521,7 +527,7 @@ fn run_task(
             "--json",
             "--skip-git-repo-check",
             "--sandbox",
-            if app.is_some() {
+            if app.is_some() && !app_manager {
                 "workspace-write"
             } else {
                 "read-only"
@@ -624,7 +630,7 @@ fn run_task(
     let raw = fs::read_to_string(root.join(".fork/result.json"))?;
     let mut result = agent_result(&c.agent, &raw, success)?;
     extract_chat_emoji(&mut result);
-    if root.join(".fork/workspace.json").exists() {
+    if !app_manager && root.join(".fork/workspace.json").exists() {
         trace.status("Uploading app preview…");
         match push(c, &root) {
             Ok(url) => {

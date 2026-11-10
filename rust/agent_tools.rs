@@ -22,6 +22,7 @@ fn context() -> Result<(String, String, PathBuf)> {
 fn schemas() -> Value {
     json!([{"name":"run_command","description":"Run a shell command on the user's connected server. The web UI must approve it before execution. A denial must be respected; never work around it with another tool.","inputSchema":{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Absolute working directory; defaults to the task workspace"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":300}},"required":["command"],"additionalProperties":false}},
     {"name":"propose_app","description":"Send Fork's standard app proposal card. Creating a new Fork app MUST use this tool, then end the turn silently with no user-facing text before or after the card. Do not repeat features or explain how to confirm; the card already does that. Wait for UI confirmation before building. Never generate app files in a chat before that confirmation.","inputSchema":{"type":"object","properties":{"app_name":{"type":"string","description":"Short lowercase URL slug"},"title":{"type":"string"},"description":{"type":"string"},"features":{"type":"array","items":{"type":"string"}},"name_options":{"type":"array","items":{"type":"string"}},"bg_color":{"type":"string"},"bg_color_light":{"type":"string"},"app_type":{"type":"string","enum":["web","website","document","agent"]},"website_name":{"type":"string"},"no_auth":{"type":"boolean"}},"required":["app_name","title","description","features"],"additionalProperties":false}},
+ {"name":"delegate_to_builder","description":"Hand an existing app code/design change to Fork Builder. Supply a complete implementation brief, then end this manager turn silently. Do not edit app files yourself. Fork displays the standard build progress and commits the completed version.","inputSchema":{"type":"object","properties":{"task":{"type":"string","minLength":1,"maxLength":32000}},"required":["task"],"additionalProperties":false}},
  {"name":"publish_app_icon","description":"Publish the actual PNG/JPEG image generated for the app using the exact supplied Fork artwork prompt. Only available in a confirmed build. Never upload SVG, a placeholder or a screenshot of the app.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path of the generated raster artwork, including native image-generation output paths"}},"required":["path"],"additionalProperties":false}}])
 }
 fn read_output(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
@@ -119,6 +120,19 @@ fn call(name: &str, args: &Value) -> Result<Value> {
                     .unwrap_or(120)
                     .clamp(1, 300),
             )
+        }
+        "delegate_to_builder" => {
+            let brief = args["task"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty() && s.len() <= 32000)
+                .ok_or("Invalid builder brief")?;
+            let answer = request(
+                &c,
+                "POST",
+                &format!("/api/cli/tasks/{task}/delegate"),
+                Some(json!({"session_id":session,"task":brief})),
+            )?;
+            Ok(tool_text(format!("{answer}\nEnd this manager turn silently. Fork now owns Builder progress and completion."),false))
         }
         "publish_app_icon" => {
             let path = PathBuf::from(args["path"].as_str().ok_or("Missing image path")?);
@@ -226,7 +240,7 @@ pub fn codex_config(c: &Config) -> Result<String> {
     } else {
         String::new()
     };
-    Ok(format!("mcp_servers={{fork={{command={exe},args=[\"agent-tools\"],env={{{envs}}},required=true,tool_timeout_sec=660,tools={{run_command={{approval_mode=\"approve\"}},propose_app={{approval_mode=\"approve\"}},publish_app_icon={{approval_mode=\"approve\"}}}}}}{virtual_pc}}}"))
+    Ok(format!("mcp_servers={{fork={{command={exe},args=[\"agent-tools\"],env={{{envs}}},required=true,tool_timeout_sec=660,tools={{run_command={{approval_mode=\"approve\"}},propose_app={{approval_mode=\"approve\"}},publish_app_icon={{approval_mode=\"approve\"}},delegate_to_builder={{approval_mode=\"approve\"}}}}}}{virtual_pc}}}"))
 }
 
 fn base64(bytes: &[u8]) -> String {
