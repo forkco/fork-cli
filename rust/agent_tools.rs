@@ -22,6 +22,7 @@ fn context() -> Result<(String, String, PathBuf)> {
 fn schemas() -> Value {
     json!([{"name":"run_command","description":"Run a shell command on the user's connected server. The web UI must approve it before execution. A denial must be respected; never work around it with another tool.","inputSchema":{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Absolute working directory; defaults to the task workspace"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":300}},"required":["command"],"additionalProperties":false}},
     {"name":"propose_app","description":"Send Fork's standard app proposal card. Creating a new Fork app MUST use this tool, then end the turn silently with no user-facing text before or after the card. Do not repeat features or explain how to confirm; the card already does that. Wait for UI confirmation before building. Never generate app files in a chat before that confirmation.","inputSchema":{"type":"object","properties":{"app_name":{"type":"string","description":"Short lowercase URL slug"},"title":{"type":"string"},"description":{"type":"string"},"features":{"type":"array","items":{"type":"string"}},"name_options":{"type":"array","items":{"type":"string"}},"bg_color":{"type":"string"},"bg_color_light":{"type":"string"},"app_type":{"type":"string","enum":["web","website","document","agent"]},"website_name":{"type":"string"},"no_auth":{"type":"boolean"}},"required":["app_name","title","description","features"],"additionalProperties":false}},
+ {"name":"workspace","description":"Built-in Fork operations with no shell and no permission dialog. push uploads the current app preview; pull refreshes files; save commits outside managed builds (managed builds commit automatically); test runs the configured browser; status/help describe this workspace. Use this instead of running fork commands through run_command.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["push","pull","save","test","status","help","version"]}},"required":["action"],"additionalProperties":false}},
  {"name":"delegate_to_builder","description":"Hand an existing app code/design change to Fork Builder. Supply a complete implementation brief, then end this manager turn silently. Do not edit app files yourself. Fork displays the standard build progress and commits the completed version.","inputSchema":{"type":"object","properties":{"task":{"type":"string","minLength":1,"maxLength":32000}},"required":["task"],"additionalProperties":false}},
  {"name":"publish_app_icon","description":"Publish the actual PNG/JPEG image generated for the app using the exact supplied Fork artwork prompt. Only available in a confirmed build. Never upload SVG, a placeholder or a screenshot of the app.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path of the generated raster artwork, including native image-generation output paths"}},"required":["path"],"additionalProperties":false}}])
 }
@@ -97,10 +98,16 @@ fn call(name: &str, args: &Value) -> Result<Value> {
             let cwd = args["cwd"]
                 .as_str()
                 .map(PathBuf::from)
-                .unwrap_or(root)
+                .unwrap_or_else(|| root.clone())
                 .canonicalize()?;
             if !cwd.is_dir() {
                 return Err("Working directory is not a directory".into());
+            }
+            if let Some(action) = builtin_command(command) {
+                if cwd != root {
+                    return Err("Fork workspace actions use the bound task workspace".into());
+                }
+                return workspace(&c, &root, &action);
             }
             let answer = request_timeout(
                 &c,
@@ -121,6 +128,7 @@ fn call(name: &str, args: &Value) -> Result<Value> {
                     .clamp(1, 300),
             )
         }
+        "workspace" => workspace(&c, &root, args["action"].as_str().ok_or("Missing action")?),
         "delegate_to_builder" => {
             let brief = args["task"]
                 .as_str()
@@ -224,6 +232,9 @@ fn tool_environment() -> Result<Value> {
     for key in ["FORK_TASK_ID", "FORK_SESSION_ID", "FORK_WORKSPACE_ROOT"] {
         envs[key] = json!(env::var(key)?);
     }
+    for key in ["FORK_TASK_KIND", "FORK_APP_ID"] {
+        envs[key] = json!(env::var(key).unwrap_or_default());
+    }
     Ok(envs)
 }
 pub fn codex_config(c: &Config) -> Result<String> {
@@ -240,7 +251,7 @@ pub fn codex_config(c: &Config) -> Result<String> {
     } else {
         String::new()
     };
-    Ok(format!("mcp_servers={{fork={{command={exe},args=[\"agent-tools\"],env={{{envs}}},required=true,tool_timeout_sec=660,tools={{run_command={{approval_mode=\"approve\"}},propose_app={{approval_mode=\"approve\"}},publish_app_icon={{approval_mode=\"approve\"}},delegate_to_builder={{approval_mode=\"approve\"}}}}}}{virtual_pc}}}"))
+    Ok(format!("mcp_servers={{fork={{command={exe},args=[\"agent-tools\"],env={{{envs}}},required=true,tool_timeout_sec=660,tools={{run_command={{approval_mode=\"approve\"}},propose_app={{approval_mode=\"approve\"}},publish_app_icon={{approval_mode=\"approve\"}},delegate_to_builder={{approval_mode=\"approve\"}},workspace={{approval_mode=\"approve\"}}}}}}{virtual_pc}}}"))
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -278,6 +289,130 @@ mod icon_tests {
             ("foobar", "Zm9vYmFy"),
         ] {
             assert_eq!(base64(raw.as_bytes()), expected);
+        }
+    }
+}
+
+// Parse only a single literal invocation. No shell is ever spawned for these
+// operations. Compound commands/substitution remain behind command approval.
+fn builtin_command(command: &str) -> Option<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in command.chars() {
+        if escaped {
+            word.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\n' || ch == '\r' || ch == '\0' {
+            return None;
+        }
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None
+                } else {
+                    word.push(ch)
+                }
+            }
+            Some('"') => {
+                if ch == '"' {
+                    quote = None
+                } else if ch == '$' || ch == '`' {
+                    return None;
+                } else if ch == '\\' {
+                    escaped = true
+                } else {
+                    word.push(ch)
+                }
+            }
+            _ => match ch {
+                '\'' | '"' => quote = Some(ch),
+                '\\' => escaped = true,
+                '$' | '`' | ';' | '|' | '&' | '<' | '>' | '(' | ')' | '{' | '}' | '*' | '?'
+                | '[' | ']' => return None,
+                c if c.is_whitespace() => {
+                    if !word.is_empty() {
+                        words.push(std::mem::take(&mut word));
+                    }
+                }
+                _ => word.push(ch),
+            },
+        }
+    }
+    if quote.is_some() || escaped {
+        return None;
+    }
+    if !word.is_empty() {
+        words.push(word)
+    }
+    if words.len() != 2 {
+        return None;
+    }
+    let exe = env::current_exe().ok()?;
+    if words[0] != "fork" && Path::new(&words[0]) != exe {
+        return None;
+    }
+    if ["push", "pull", "save", "test", "status", "help", "version"].contains(&words[1].as_str()) {
+        Some(words[1].clone())
+    } else {
+        None
+    }
+}
+fn workspace(c: &Config, root: &Path, action: &str) -> Result<Value> {
+    if action == "help" {
+        return Ok(tool_text("Use workspace push for a preview, pull to refresh app files, test for browser verification, status for the bound app. Managed builds are committed automatically by Fork.".into(),false));
+    }
+    if action == "version" {
+        return Ok(tool_text(
+            format!("Fork {}", env!("CARGO_PKG_VERSION")),
+            false,
+        ));
+    }
+    let meta: Value = serde_json::from_slice(&fs::read(root.join(".fork/workspace.json"))?)?;
+    let app = env::var("FORK_APP_ID").unwrap_or_default();
+    if app.is_empty() || meta["app_id"] != app {
+        return Err("Workspace is not bound to this task's app".into());
+    }
+    let kind = env::var("FORK_TASK_KIND").unwrap_or_default();
+    if kind == "app_manager" && matches!(action, "push" | "save") {
+        return Err("Delegate app changes to Builder; Manager cannot publish app changes".into());
+    }
+    let text=match action {
+  "push"=>push(c,root)?,
+  "pull"=>{pull(c,&app,root)?;"App files refreshed".into()},
+  "save" if kind=="build"=>"Fork automatically commits this managed build after completion. No manual save is needed.".into(),
+  "save"=>save_app(c,root)?.to_string(),
+  "test"=>{if !c.virtual_computer{return Err("Virtual computer is disabled".into())}let p:Value=serde_json::from_slice(&fs::read(root.join(".fork/preview.json"))?)?;browser(root,p["preview_url"].as_str().ok_or("Push a preview first")?)?.to_string()},
+  "status"=>json!({"app_id":app,"revision":meta["revision"],"managed_build":kind=="build","virtual_computer":c.virtual_computer}).to_string(),
+  _=>return Err("Unknown Fork workspace action".into()),
+ };
+    Ok(tool_text(text, false))
+}
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    #[test]
+    fn only_literal_self_invocations_are_builtin() {
+        let exe = env::current_exe().unwrap();
+        for c in ["fork push".to_owned(), format!("'{}' push", exe.display())] {
+            assert_eq!(builtin_command(&c).as_deref(), Some("push"));
+        }
+        for c in [
+            "fork push; touch sentinel",
+            "fork push && true",
+            "fork push | sh",
+            "fork $(echo push)",
+            "fork `echo push`",
+            "fork push > file",
+            "/tmp/other/fork push",
+            "fork push\nfork help",
+            "fork push --host evil",
+            "FORK_CONFIG_DIR=other fork push",
+        ] {
+            assert!(builtin_command(c).is_none(), "{c}");
         }
     }
 }

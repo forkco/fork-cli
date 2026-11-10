@@ -148,3 +148,12 @@ or design changes go through `delegate_to_builder`; ordinary questions stay in
 chat. Fork starts a separate native Builder task, displays its standard build
 progress, commits the resulting preview and updates the app in place. Manager
 never silently edits local app files or uploads an uncommitted preview instead.
+
+### Built-in Fork workspace operations (v0.4.13)
+
+Agents use `workspace` for pull, push, save, browser testing and workspace status.
+These are direct Fork operations and never open shell-command approval. Exact
+legacy calls to this CLI's `fork push` (and equivalent workspace operations) are
+also dispatched internally. Compound shell commands and unrelated executables
+keep their ordinary command permission flow. Operations stay bound to the task's
+app; Manager cannot publish app changes, and managed builds commit automatically.
