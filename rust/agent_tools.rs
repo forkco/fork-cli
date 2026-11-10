@@ -21,7 +21,7 @@ fn context() -> Result<(String, String, PathBuf)> {
 }
 fn schemas() -> Value {
     json!([{"name":"run_command","description":"Run a shell command on the user's connected server. The web UI must approve it before execution. A denial must be respected; never work around it with another tool.","inputSchema":{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Absolute working directory; defaults to the task workspace"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":300}},"required":["command"],"additionalProperties":false}},
-    {"name":"propose_app","description":"Send Fork's standard app proposal card. Creating a new Fork app MUST use this tool, then wait until the user clicks Create app in the web UI. Never generate app files in a chat before that confirmation.","inputSchema":{"type":"object","properties":{"app_name":{"type":"string","description":"Short lowercase URL slug"},"title":{"type":"string"},"description":{"type":"string"},"features":{"type":"array","items":{"type":"string"}},"name_options":{"type":"array","items":{"type":"string"}},"bg_color":{"type":"string"},"bg_color_light":{"type":"string"},"app_type":{"type":"string","enum":["web","website","document","agent"]},"website_name":{"type":"string"},"no_auth":{"type":"boolean"}},"required":["app_name","title","description","features"],"additionalProperties":false}}])
+    {"name":"propose_app","description":"Send Fork's standard app proposal card. Creating a new Fork app MUST use this tool, then end the turn silently with no user-facing text before or after the card. Do not repeat features or explain how to confirm; the card already does that. Wait for UI confirmation before building. Never generate app files in a chat before that confirmation.","inputSchema":{"type":"object","properties":{"app_name":{"type":"string","description":"Short lowercase URL slug"},"title":{"type":"string"},"description":{"type":"string"},"features":{"type":"array","items":{"type":"string"}},"name_options":{"type":"array","items":{"type":"string"}},"bg_color":{"type":"string"},"bg_color_light":{"type":"string"},"app_type":{"type":"string","enum":["web","website","document","agent"]},"website_name":{"type":"string"},"no_auth":{"type":"boolean"}},"required":["app_name","title","description","features"],"additionalProperties":false}}])
 }
 fn read_output(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
@@ -126,7 +126,7 @@ fn call(name: &str, args: &Value) -> Result<Value> {
                 &format!("/api/cli/tasks/{task}/proposal"),
                 Some(json!({"session_id":session,"proposal":args})),
             )?;
-            Ok(tool_text(format!("App proposal sent: {answer}. Stop here and wait for the user to click Create app in Fork. Do not build it in this chat."),false))
+            Ok(tool_text(format!("App proposal sent: {answer}. The proposal card is already visible and is the complete response. End your turn now with no user-facing text. Do not repeat the features, explain that files are not created, or give button instructions. If emoji metadata is required, output only its hidden comment. Still wait for UI confirmation before building."),false))
         }
         _ => Err("Unknown tool".into()),
     }

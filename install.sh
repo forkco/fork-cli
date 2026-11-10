@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version=${FORK_CLI_VERSION:-0.4.9}
+version=${FORK_CLI_VERSION:-0.4.10}
 base=${FORK_AGENT_DOWNLOAD_BASE:-https://github.com/forkco/fork-cli/releases/download/v$version}
 target=${INSTALL_DIR:-"$HOME/.local/bin"}
 host=${FORK_HOST:-fork.me}

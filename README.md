@@ -118,3 +118,11 @@ The build pulls all files into an isolated temporary workspace, edits them with
 native tools, optionally tests with Virtual computer, and uploads an immutable
 preview. Fork commits the approved build under its normal version/build lease.
 `fork app-create` is retired; ask in the web chat and confirm the proposal.
+
+### Quiet proposal replies (v0.4.10)
+
+The native system/developer prompt and proposal tool result treat the visible
+card as the complete acknowledgement. Agents do not repeat its feature list,
+explain that files do not exist yet, or narrate its confirmation button. Hidden
+chat emoji metadata is still supported; requested explanations and real failures
+remain ordinary replies.
