@@ -1,6 +1,7 @@
 mod agent_tools;
 mod models;
 mod progress;
+mod task_leases;
 mod trace;
 mod update;
 const REPLY_STYLE: &str = include_str!("reply-style-prompt.md");
@@ -734,6 +735,8 @@ fn run(c: &Config) -> Result<()> {
         let reader = stream.stdout.take().unwrap();
         let alive = Arc::new(AtomicBool::new(true));
         let reader_alive = alive.clone();
+        let leases = task_leases::TaskLeases::default();
+        let reader_leases = leases.clone();
         let (tx, rx) = mpsc::channel();
         let stream_config = c.clone();
         let stream_models = native_models.clone();
@@ -774,25 +777,38 @@ fn run(c: &Config) -> Result<()> {
                     }
                     if event == "task" {
                         if let Ok(task) = serde_json::from_str::<Value>(v) {
-                            if tx.send((task, session.clone())).is_err() {
+                            let lease = reader_leases.register(task["id"].as_str().unwrap_or(""));
+                            if tx.send((task, session.clone(), lease)).is_err() {
                                 break;
+                            }
+                        }
+                    }
+                    if event == "cancel" {
+                        if let Ok(record) = serde_json::from_str::<Value>(v) {
+                            if let Some(id) = record["task_id"].as_str() {
+                                reader_leases.cancel(id);
                             }
                         }
                     }
                 }
             }
             reader_alive.store(false, Ordering::SeqCst);
+            reader_leases.disconnect();
         });
         while RUN.load(Ordering::SeqCst) && alive.load(Ordering::SeqCst) {
             match rx.recv_timeout(Duration::from_secs(1)) {
-                Ok((task, session)) => {
+                Ok((task, session, task_alive)) => {
+                    let id = task["id"].as_str().unwrap_or("");
+                    if !task_alive.load(Ordering::SeqCst) {
+                        leases.finish(id);
+                        continue;
+                    }
                     if TASK_STATE
                         .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
                         .is_err()
                     {
                         break;
                     }
-                    let id = task["id"].as_str().unwrap_or("");
                     let receipt = dir().join("results").join(format!("{id}.json"));
                     let saved = fs::read(&receipt)
                         .ok()
@@ -809,7 +825,7 @@ fn run(c: &Config) -> Result<()> {
                             preview_token: saved["preview_token"].as_str().unwrap_or("").into(),
                         }
                     } else {
-                        match run_task(c, &task, &alive, &session) {
+                        match run_task(c, &task, &task_alive, &session) {
                             Ok(s) => s,
                             Err(e) => {
                                 if !alive.load(Ordering::SeqCst) || !RUN.load(Ordering::SeqCst) {
@@ -827,6 +843,15 @@ fn run(c: &Config) -> Result<()> {
                             }
                         }
                     };
+                    // No completion, failure message or retry receipt may escape
+                    // from a superseded turn, even if native output raced cancel.
+                    if !task_alive.load(Ordering::SeqCst) {
+                        let _ = fs::remove_file(&receipt);
+                        leases.finish(id);
+                        let _ =
+                            TASK_STATE.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst);
+                        continue;
+                    }
                     extract_chat_emoji(&mut result);
                     let mut summary = result.summary;
                     let chat_emoji = result.chat_emoji;
@@ -845,9 +870,21 @@ fn run(c: &Config) -> Result<()> {
                             json!({"summary":summary,"usage":result.usage,"chat_emoji":chat_emoji,"failure":result.failure,"preview_token":result.preview_token}),
                         ),
                     ) {
+                        if !task_alive.load(Ordering::SeqCst) {
+                            let _ = fs::remove_file(&receipt);
+                            leases.finish(id);
+                            let _ = TASK_STATE.compare_exchange(
+                                1,
+                                0,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            );
+                            continue;
+                        }
                         eprintln!("Completion pending retry: {e}");
                         break;
                     }
+                    leases.finish(id);
                     let _ = TASK_STATE.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}

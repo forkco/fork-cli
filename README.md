@@ -157,3 +157,12 @@ legacy calls to this CLI's `fork push` (and equivalent workspace operations) are
 also dispatched internally. Compound shell commands and unrelated executables
 keep their ordinary command permission flow. Operations stay bound to the task's
 app; Manager cannot publish app changes, and managed builds commit automatically.
+
+### Reply interruption (v0.4.14)
+
+Sending a newer message in a private Fork chat interrupts its unfinished native
+reply. Fork cancels superseded queued turns and sends the running connector a
+task-scoped cancellation. The connector stops that process group, suppresses its
+obsolete result and answers the newest message on the same connection. Other
+chats and app build queues remain intact. A lost connection still stops its
+native invocation, and the server rejects stale completion receipts.
