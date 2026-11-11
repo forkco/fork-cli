@@ -166,3 +166,20 @@ task-scoped cancellation. The connector stops that process group, suppresses its
 obsolete result and answers the newest message on the same connection. Other
 chats and app build queues remain intact. A lost connection still stops its
 native invocation, and the server rejects stale completion receipts.
+
+### Parallel app edits (v0.4.15)
+
+One installation runs two workers for the agent you connected by default. Edit
+two different apps from their Fork chats at the same time. Each worker has its
+own session, native process and task directory. Updates wait for all workers.
+Edits to one app still use the app's build queue.
+
+To use both subscriptions, sign in to both native CLIs on this server, then run:
+
+```sh
+fork stop && fork workers claude codex && fork start
+```
+
+Choose Host Claude or Host Codex in each chat. Each name in the command reserves
+one worker for that provider; repeat a name to give it more capacity. You can
+configure one to four workers. Extra tasks wait for a compatible worker.

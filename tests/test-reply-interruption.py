@@ -68,6 +68,7 @@ print(json.dumps({'type':'result','result':'LATEST_REPLY','is_error':False,'usag
     threading.Thread(target=server.serve_forever,daemon=True).start()
     (config/'config.json').write_text(json.dumps({'origin':f'http://127.0.0.1:{server.server_port}','token':'test-only','agent':'claude','virtual_computer':False}))
     env=dict(os.environ,FORK_CONFIG_DIR=str(config),PATH=str(root)+os.pathsep+os.environ['PATH'],INTERRUPT_TEST_ROOT=str(root),INTERRUPT_TEST_FIRST=first)
+    (config/"workers.json").write_text(json.dumps(["claude"]))
     process=subprocess.Popen([binary,'run'],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     try:
         wait_for(done.is_set)

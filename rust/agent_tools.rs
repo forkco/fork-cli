@@ -218,28 +218,18 @@ pub fn serve() -> Result<()> {
     Ok(())
 }
 
-pub fn claude_config(c: &Config) -> Result<String> {
+pub fn claude_config(c: &Config, task_env: &Value) -> Result<String> {
     let mut config: Value = serde_json::from_str(&virtual_mcp()?)?;
     if !c.virtual_computer {
         config["mcpServers"].as_object_mut().unwrap().clear();
     }
     config["mcpServers"]["fork"] =
-        json!({"command":env::current_exe()?,"args":["agent-tools"],"env":tool_environment()?});
+        json!({"command":env::current_exe()?,"args":["agent-tools"],"env":task_env});
     Ok(config.to_string())
 }
-fn tool_environment() -> Result<Value> {
-    let mut envs = json!({"FORK_CONFIG_DIR":dir()});
-    for key in ["FORK_TASK_ID", "FORK_SESSION_ID", "FORK_WORKSPACE_ROOT"] {
-        envs[key] = json!(env::var(key)?);
-    }
-    for key in ["FORK_TASK_KIND", "FORK_APP_ID"] {
-        envs[key] = json!(env::var(key).unwrap_or_default());
-    }
-    Ok(envs)
-}
-pub fn codex_config(c: &Config) -> Result<String> {
+pub fn codex_config(c: &Config, task_env: &Value) -> Result<String> {
     let exe = serde_json::to_string(&env::current_exe()?.to_string_lossy())?;
-    let envs = tool_environment()?
+    let envs = task_env
         .as_object()
         .unwrap()
         .iter()
