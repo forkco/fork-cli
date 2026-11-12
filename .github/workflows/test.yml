@@ -37,6 +37,7 @@ jobs:
           sha256sum fork-agent-linux-amd64 virtual-computer.tar.gz > SHA256SUMS
       - name: Verify the server command permission gate
         run: python3 tests/test-command-approval.py dist/fork-agent-linux-amd64
+      - run: python3 tests/test-platform-tools.py dist/fork-agent-linux-amd64
       - name: Verify concurrent app edits
         run: python3 tests/test-parallel-apps.py dist/fork-agent-linux-amd64
       - name: Verify native reply interruption

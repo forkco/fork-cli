@@ -185,3 +185,7 @@ fork stop && fork workers claude codex && fork start
 Choose Host Claude or Host Codex in each chat. Each name in the command reserves
 one worker for that provider; repeat a name to give it more capacity. You can
 configure one to four workers. Extra tasks wait for a compatible worker.
+
+### Fork agent tools
+
+With a compatible Fork server, version 0.4.17 and later use your selected Claude or Codex to run individual model turns. Fork supplies the active Manager, Builder or app-agent tools with their current input schemas. New tools appear automatically as the server adds them to that role. An app or video proposal opens in the usual Fork interface, where you can review it before creation. Commands on your machine use the existing command approval dialog. Virtual computer is available when enabled.

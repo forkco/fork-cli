@@ -32,7 +32,7 @@ export function virtualComputer({workspace,browserExecutable}={}) {
       await start();
       if (command?.action==='open_app') {
         if(instance.stats().sessions) throw Error('Close the current browser session first');
-        appBridge=await ownerBrowser(command.target);
+        appBridge=await ownerBrowser(command.target, process.env, command.url);
         return instance.run(owner,{action:'open',url:appBridge.url,device:command.device||'desktop'});
       }
       if(command?.action==='open') appBridge=undefined;

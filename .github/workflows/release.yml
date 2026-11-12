@@ -45,6 +45,8 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
         run: python3 tests/test-command-approval.py "dist/fork-agent-$PLATFORM"
+      - name: Verify dynamic platform tools and role restrictions
+        run: python3 tests/test-platform-tools.py "dist/fork-agent-${{ matrix.platform }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}

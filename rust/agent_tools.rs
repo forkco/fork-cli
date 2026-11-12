@@ -239,6 +239,46 @@ pub fn serve() -> Result<()> {
                 json!({"protocolVersion":request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),"capabilities":{"tools":{}},"serverInfo":{"name":"fork","version":env!("CARGO_PKG_VERSION")}})
             }
             "ping" => json!({}),
+            "tools/list" if model_turn::active() => {
+                let mut tools = model_turn::definitions()?;
+                let mut cmd = schemas()
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|t| t["name"] == "run_command")
+                    .unwrap()
+                    .clone();
+                cmd["name"] = json!("host_run_command");
+                if env::var("FORK_LOCAL_CONTROLS").as_deref() == Ok("1") {
+                    tools.push(cmd);
+                }
+                if env::var("FORK_ICON").as_deref() == Ok("1") {
+                    if let Some(icon) = schemas()
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|t| t["name"] == "publish_app_icon")
+                    {
+                        tools.push(icon.clone());
+                    }
+                }
+                json!({"tools":tools})
+            }
+            "tools/call" if model_turn::active() => {
+                let name = request["params"]["name"].as_str().unwrap_or("");
+                let args = &request["params"]["arguments"];
+                let result =
+                    if name == "publish_app_icon" && env::var("FORK_ICON").as_deref() == Ok("1") {
+                        call(name, args)
+                    } else if name == "host_run_command"
+                        && env::var("FORK_LOCAL_CONTROLS").as_deref() == Ok("1")
+                    {
+                        call("run_command", args)
+                    } else {
+                        model_turn::select(name, args)
+                    };
+                result.unwrap_or_else(|e| tool_text(e.to_string(), true))
+            }
             "tools/list" => json!({"tools":schemas()}),
             "tools/call" => call(
                 request["params"]["name"].as_str().unwrap_or(""),
@@ -288,7 +328,52 @@ pub fn codex_config(c: &Config, task_env: &Value) -> Result<String> {
     } else {
         String::new()
     };
-    Ok(format!("mcp_servers={{fork={{command={exe},args=[\"agent-tools\"],env={{{envs}}},required=true,tool_timeout_sec=660,tools={{get_app_logs={{approval_mode=\"approve\"}},run_command={{approval_mode=\"approve\"}},propose_app={{approval_mode=\"approve\"}},publish_app_icon={{approval_mode=\"approve\"}},delegate_to_builder={{approval_mode=\"approve\"}},workspace={{approval_mode=\"approve\"}}}}}}{virtual_pc}}}"))
+    let mut names: Vec<String> = if task_env["FORK_TASK_KIND"] == "model_turn" {
+        let path = PathBuf::from(
+            task_env["FORK_WORKSPACE_ROOT"]
+                .as_str()
+                .ok_or("Missing workspace")?,
+        )
+        .join(".fork/tools.json");
+        let defs: Vec<Value> = serde_json::from_slice(&fs::read(path)?)?;
+        defs.into_iter()
+            .map(|t| {
+                t["name"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or("Missing tool name")
+            })
+            .collect::<std::result::Result<_, _>>()?
+    } else {
+        vec![
+            "get_app_logs",
+            "run_command",
+            "propose_app",
+            "publish_app_icon",
+            "delegate_to_builder",
+            "workspace",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    };
+    if task_env["FORK_LOCAL_CONTROLS"] == "1" {
+        names.push("host_run_command".into());
+    }
+    if task_env["FORK_ICON"] == "1" {
+        names.push("publish_app_icon".into());
+    }
+    let approvals = names
+        .into_iter()
+        .map(|n| {
+            Ok(format!(
+                "{}={{approval_mode=\"approve\"}}",
+                serde_json::to_string(&n)?
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .join(",");
+    Ok(format!("mcp_servers={{fork={{command={exe},args=[\"agent-tools\"],env={{{envs}}},required=true,tool_timeout_sec=660,tools={{{approvals}}}}}{virtual_pc}}}"))
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -414,7 +499,7 @@ fn workspace(c: &Config, root: &Path, action: &str) -> Result<Value> {
         return Err("Workspace is not bound to this task's app".into());
     }
     let kind = env::var("FORK_TASK_KIND").unwrap_or_default();
-    if kind == "app_manager" && matches!(action, "push" | "save") {
+    if matches!(kind.as_str(), "app_manager" | "model_turn") && matches!(action, "push" | "save") {
         return Err("Delegate app changes to Builder; Manager cannot publish app changes".into());
     }
     let text=match action {

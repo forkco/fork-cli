@@ -22,7 +22,7 @@ function listenForSDK(expectedOrigin) {
   });
 }
 
-export async function ownerBrowser(target = 'published', env = process.env) {
+export async function ownerBrowser(target = 'published', env = process.env, previewURL) {
   const {FORK_APP_ID: app, FORK_TASK_ID: task, FORK_SESSION_ID: session} = env;
   if (![app, task, session].every(id => uuid.test(id))) throw Error('Open an app from its own Fork task');
   if (!['published', 'preview'].includes(target)) throw Error('Choose published or preview');
@@ -35,7 +35,13 @@ export async function ownerBrowser(target = 'published', env = process.env) {
   let preview = '';
   if (target === 'preview') {
     const file = join(env.FORK_WORKSPACE_ROOT, '.fork', 'preview.json');
-    const metadata = JSON.parse(await readFile(file, 'utf8'));
+    let metadata;
+    if (previewURL) {
+      const url = new URL(previewURL);
+      const match = /^p-([a-f0-9]{32})\./.exec(url.hostname);
+      if (!match || url.protocol !== 'https:' || url.hostname !== 'p-' + match[1] + '.' + origin.hostname) throw Error('Invalid Fork preview URL');
+      metadata = {token: match[1]};
+    } else { metadata = JSON.parse(await readFile(file, 'utf8')); }
     if (!/^[0-9a-f]{32}$/.test(metadata.token)) throw Error('Push an app preview before testing it');
     preview = metadata.token;
   }
