@@ -6,7 +6,7 @@ const {url,workspace}=JSON.parse(input);const root=resolve(workspace);await mkdi
 const pc=virtualComputer({workspace:join(root,'.fork/computer')});
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>pc.close().finally(()=>process.exit(1)));
 try{
- const opened=await pc.run({action:'open',url,device:'desktop'});
+ const opened=await pc.run(process.env.FORK_TASK_ID ? {action:'open_app',target:'preview',device:'desktop'} : {action:'open',url,device:'desktop'});
  const inspected=await pc.run({action:'inspect',session_id:opened.session_id});
  const screenshot=await pc.run({action:'screenshot',session_id:opened.session_id,format:'png'});
  await writeFile(join(root,'.fork/preview.png'),Buffer.from(screenshot.image.base64,'base64'),{mode:0o600});

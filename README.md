@@ -27,7 +27,9 @@ fork app-create TITLE SLUG
 
 App tasks download a complete logical snapshot into a private temporary workspace: frontend files, functions, agents, chat views and schemas. The official agent uses normal file/edit/shell tools. Its instructions explain `fork push` and the task-scoped computer tool. Final edits are also pushed as a preview automatically. Preview URLs use separate random subdomains, so root-relative assets work and user app HTML never runs on the Fork account origin. Previews expire after 24 hours. They do not publish or overwrite the saved app. Conflicting saved revisions return HTTP 409 instead of overwriting another edit.
 
-The preview serves frontend files. It does not execute unpublished backend functions or provision cloned databases. Test those changes separately before publication.
+During an app task, Claude and Codex can read client console and server function logs with `get_app_logs`. Filter by source, level or time, and page through results using the returned cursors. This also works with Virtual computer switched off.
+
+With Virtual computer enabled, the agent can open the current app with `open_app`. Use the `published` target to reproduce an issue, then push a draft and use `preview` to test the change. Both open as the task owner. The SDK supports the viewer profile, same-app function calls and runtime diagnostics. Preview functions use the draft code and the existing app database, so writes affect real app data. The connector keeps its device key outside Chromium. Ordinary URL opens use a fresh anonymous browser session.
 
 The connector streams task events with heartbeats. A lost stream cancels the running agent and unfinished tasks are requeued. Saved completion receipts are resent after reconnect, preventing duplicate replies after an ambiguous completion request.
 
