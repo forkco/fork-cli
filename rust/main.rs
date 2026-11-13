@@ -3,6 +3,7 @@ mod browser_adapter;
 mod model_turn;
 mod models;
 mod progress;
+mod provider_login;
 mod task_leases;
 mod trace;
 mod update;
@@ -797,7 +798,10 @@ fn run(c: &Config) -> Result<()> {
         if !catalogs.contains_key(agent) {
             let mut config = c.clone();
             config.agent = agent.clone();
-            check_login(&config)?;
+            // A signed-out Claude worker must stay connected to accept a sign-in request.
+            if config.agent != "claude" {
+                check_login(&config)?;
+            }
             catalogs.insert(agent.clone(), models::discover(agent).unwrap_or_default());
         }
     }
@@ -904,6 +908,17 @@ fn worker(c: &Config, native_models: &[models::Model]) -> Result<()> {
                                 ) {
                                     eprintln!("Model catalog unavailable: {e}");
                                 }
+                            }
+                        }
+                    }
+                    if event == "provider_login" && stream_config.agent == "claude" {
+                        if let Ok(record) = serde_json::from_str::<Value>(v) {
+                            if let Some(id) = record["id"].as_str().filter(|id| provider_login::valid_id(id)) {
+                                let config = stream_config.clone();
+                                let session = session.clone();
+                                let id = id.to_owned();
+                                let connected = reader_alive.clone();
+                                std::thread::spawn(move || provider_login::serve(&config, &session, &id, connected));
                             }
                         }
                     }
