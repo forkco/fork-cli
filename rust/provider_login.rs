@@ -56,20 +56,42 @@ fn forward_url(output: impl Read, sender: mpsc::Sender<String>) {
             Ok(0) | Err(_) => return,
             Ok(_) => {}
         }
-        for word in line.split_whitespace() {
-            if [
-                "https://claude.com/cai/oauth/authorize?",
-                "https://claude.ai/oauth/authorize?",
-            ]
-            .iter()
-            .any(|prefix| word.starts_with(prefix))
-                && word.len() <= 4096
-            {
-                let _ = sender.send(word.to_owned());
-                let _ = std::io::copy(&mut reader, &mut std::io::sink());
-                return;
+        if let Some(url) = login_url(&line) {
+            let _ = sender.send(url.to_owned());
+            let _ = std::io::copy(&mut reader, &mut std::io::sink());
+            return;
+        }
+    }
+}
+
+// Claude Code prints OSC 8 hyperlinks even with piped output. In that
+// encoding neither the target nor the visible label is a whitespace token.
+fn login_url(line: &str) -> Option<&str> {
+    for prefix in [
+        "https://claude.com/cai/oauth/authorize?",
+        "https://claude.ai/oauth/authorize?",
+    ] {
+        if let Some(start) = line.find(prefix) {
+            let url = line[start..]
+                .split(|ch: char| ch.is_whitespace() || ch.is_control())
+                .next()?;
+            if url.len() <= 4096 {
+                return Some(url);
             }
         }
+    }
+    None
+}
+
+#[test]
+fn reads_plain_and_terminal_hyperlinks() {
+    let url = "https://claude.com/cai/oauth/authorize?state=fixture";
+    for line in [
+        format!("Visit: {url}"),
+        format!("Visit: \x1b]8;;{url}\x07{url}\x1b]8;;\x07"),
+        format!("\x1b]8;;{url}\x1b\\Open Claude\x1b]8;;\x1b\\"),
+    ] {
+        assert_eq!(login_url(&line), Some(url));
     }
 }
 
